@@ -11,6 +11,7 @@ from alpha_engine.data_engine.data_service import DataService
 from alpha_engine.data_engine.storage import PostgresStorage
 from alpha_engine.features import FeatureEngine, FeatureVector
 from alpha_engine.core.logger import get_logger
+from alpha_engine.state_engine import MarketStateEngine, MarketStateVector
 
 
 def main() -> None:
@@ -25,11 +26,17 @@ def main() -> None:
 
     event_bus = EventBus()
     FeatureEngine(event_bus=event_bus)
+    MarketStateEngine(event_bus=event_bus)
 
     def _on_features(feature_vector: FeatureVector) -> None:
         logger.info("Feature vector computed timestamp=%s", feature_vector.timestamp)
 
     event_bus.subscribe("market.features", _on_features)
+
+    def _on_market_state(market_state_vector: MarketStateVector) -> None:
+        logger.info("Market state computed timestamp=%s", market_state_vector.timestamp)
+
+    event_bus.subscribe("market.state", _on_market_state)
 
     storage = PostgresStorage()
     storage.init_schema()
