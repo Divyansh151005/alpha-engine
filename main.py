@@ -9,6 +9,7 @@ from alpha_engine.core.config import get_settings
 from alpha_engine.data_engine.binance_client import BinanceHistoricalClient
 from alpha_engine.data_engine.data_service import DataService
 from alpha_engine.data_engine.storage import PostgresStorage
+from alpha_engine.features import FeatureEngine, FeatureVector
 from alpha_engine.core.logger import get_logger
 
 
@@ -23,6 +24,13 @@ def main() -> None:
     )
 
     event_bus = EventBus()
+    FeatureEngine(event_bus=event_bus)
+
+    def _on_features(feature_vector: FeatureVector) -> None:
+        logger.info("Feature vector computed timestamp=%s", feature_vector.timestamp)
+
+    event_bus.subscribe("market.features", _on_features)
+
     storage = PostgresStorage()
     storage.init_schema()
     binance_client = BinanceHistoricalClient()
@@ -32,7 +40,10 @@ def main() -> None:
         binance_client=binance_client,
     )
 
-    data_service.bootstrap(symbol="BTC/USDT", timeframe="1m", limit=100)
+    bootstrap_candles = data_service.bootstrap(symbol="BTC/USDT", timeframe="1m", limit=100)
+    for candle in bootstrap_candles:
+        event_bus.publish("market.candle", candle)
+
     logger.info("Historical bootstrap complete")
 
 
