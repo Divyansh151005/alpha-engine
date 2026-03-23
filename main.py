@@ -12,6 +12,7 @@ from alpha_engine.data_engine.storage import PostgresStorage
 from alpha_engine.features import FeatureEngine, FeatureVector
 from alpha_engine.allocation_engine import CapitalAllocator, PositionAllocation
 from alpha_engine.alpha import AlphaEngine, AlphaSignal, TrendAlphaStrategy
+from alpha_engine.volatility_engine import VolatilityTargetingEngine
 from alpha_engine.core.logger import get_logger
 from alpha_engine.state_engine import MarketStateEngine, MarketStateVector
 
@@ -31,6 +32,7 @@ def main() -> None:
     MarketStateEngine(event_bus=event_bus)
     AlphaEngine(event_bus=event_bus, strategies=[TrendAlphaStrategy()])
     CapitalAllocator(event_bus=event_bus)
+    VolatilityTargetingEngine(event_bus=event_bus, target_vol=0.3)
 
     def _on_features(feature_vector: FeatureVector) -> None:
         logger.info("Feature vector computed timestamp=%s", feature_vector.timestamp)
@@ -58,6 +60,11 @@ def main() -> None:
         logger.info("Capital allocation computed count=%s", len(allocations))
 
     event_bus.subscribe("portfolio.allocation", _on_allocation)
+
+    def _on_position(_positions: list[PositionAllocation]) -> None:
+        logger.info("Volatility adjusted position computed")
+
+    event_bus.subscribe("portfolio.position", _on_position)
 
     storage = PostgresStorage()
     storage.init_schema()
