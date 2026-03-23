@@ -18,6 +18,8 @@ def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector
         range_compression=0.0,
         volume_spike=0.0,
         return_zscore=0.0,
+        lower_wick_ratio=0.0,
+        upper_wick_ratio=0.0,
     )
 
 

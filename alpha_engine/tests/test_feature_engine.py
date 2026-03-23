@@ -8,6 +8,7 @@ import pytest
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.data.models import OHLCV
 from alpha_engine.features.feature_engine import FeatureEngine, FeatureVector
+from alpha_engine.features.microstructure import lower_wick_ratio, upper_wick_ratio
 from alpha_engine.features.trend import ema
 from alpha_engine.features.volatility import atr, calculate_returns, realized_volatility
 
@@ -81,6 +82,18 @@ def test_feature_vector_generation() -> None:
     assert np.isfinite(latest.range_compression)
     assert np.isfinite(latest.volume_spike)
     assert np.isfinite(latest.return_zscore)
+    assert 0.0 <= latest.lower_wick_ratio <= 1.0
+    assert 0.0 <= latest.upper_wick_ratio <= 1.0
+
+
+def test_wick_ratio_calculation() -> None:
+    """Lower/upper wick ratios are correctly computed from OHLC."""
+    # Candle: O=100, H=105, L=95, C=102. Range=10. Body 100-102. Lower wick 95-100=5, upper 102-105=3
+    assert lower_wick_ratio(100.0, 105.0, 95.0, 102.0) == pytest.approx(0.5)
+    assert upper_wick_ratio(100.0, 105.0, 95.0, 102.0) == pytest.approx(0.3)
+    # Doji: O=C=100, H=101, L=99. Lower=1/2=0.5, upper=1/2=0.5
+    assert lower_wick_ratio(100.0, 101.0, 99.0, 100.0) == pytest.approx(0.5)
+    assert upper_wick_ratio(100.0, 101.0, 99.0, 100.0) == pytest.approx(0.5)
 
 
 def test_event_published_when_candle_received() -> None:

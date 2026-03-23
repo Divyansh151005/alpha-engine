@@ -130,3 +130,82 @@ def test_latest_signal_per_strategy_used() -> None:
     assert len(allocations) == 1
     assert allocations[0].capital_fraction == 1.0
     assert allocations[0].timestamp == 2000
+
+
+def test_correlated_signals_get_lower_allocation() -> None:
+    """Strategies with correlated signals receive reduced allocation."""
+    event_bus = EventBus()
+    CapitalAllocator(event_bus=event_bus, correlation_window=10)
+
+    received: list[list[PositionAllocation]] = []
+    event_bus.subscribe("portfolio.allocation", received.append)
+
+    for i in range(15):
+        ts = 1000 + i * 100
+        event_bus.publish(
+            "alpha.signal",
+            _signal("A", timestamp=ts, direction="long", strength=0.5, confidence=0.5),
+        )
+        event_bus.publish(
+            "alpha.signal",
+            _signal("B", timestamp=ts, direction="long", strength=0.5, confidence=0.5),
+        )
+
+    allocations = received[-1]
+    alloc_map = {a.strategy_name: a for a in allocations}
+    assert "A" in alloc_map and "B" in alloc_map
+    total = sum(a.capital_fraction for a in allocations)
+    assert total <= 1.0 + 1e-6
+
+
+def test_independent_signals_get_higher_allocation() -> None:
+    """Strategies with opposite/independent signals retain higher allocation."""
+    event_bus = EventBus()
+    CapitalAllocator(event_bus=event_bus, correlation_window=10)
+
+    received: list[list[PositionAllocation]] = []
+    event_bus.subscribe("portfolio.allocation", received.append)
+
+    for i in range(15):
+        ts = 1000 + i * 100
+        dir_a = "long" if i % 2 == 0 else "short"
+        dir_b = "short" if i % 2 == 0 else "long"
+        event_bus.publish(
+            "alpha.signal",
+            _signal("A", timestamp=ts, direction=dir_a, strength=0.5, confidence=0.5),
+        )
+        event_bus.publish(
+            "alpha.signal",
+            _signal("B", timestamp=ts, direction=dir_b, strength=0.5, confidence=0.5),
+        )
+
+    allocations = received[-1]
+    alloc_map = {a.strategy_name: a for a in allocations}
+    assert "A" in alloc_map and "B" in alloc_map
+    total = sum(a.capital_fraction for a in allocations)
+    assert total <= 1.0 + 1e-6
+    assert alloc_map["A"].capital_fraction > 0.4
+    assert alloc_map["B"].capital_fraction > 0.4
+
+
+def test_correlated_vs_independent_allocation() -> None:
+    """Independent strategy gets higher allocation than correlated pair."""
+    event_bus = EventBus()
+    CapitalAllocator(event_bus=event_bus, correlation_window=10)
+
+    received: list[list[PositionAllocation]] = []
+    event_bus.subscribe("portfolio.allocation", received.append)
+
+    for i in range(15):
+        ts = 1000 + i * 100
+        event_bus.publish("alpha.signal", _signal("A", ts, "long", 0.5, 0.5))
+        event_bus.publish("alpha.signal", _signal("B", ts, "long", 0.5, 0.5))
+        event_bus.publish(
+            "alpha.signal",
+            _signal("C", ts, "short" if i % 2 == 0 else "long", 0.5, 0.5),
+        )
+
+    alloc_map = {a.strategy_name: a for a in received[-1]}
+    assert "A" in alloc_map and "B" in alloc_map and "C" in alloc_map
+    assert alloc_map["C"].capital_fraction > alloc_map["A"].capital_fraction
+    assert alloc_map["C"].capital_fraction > alloc_map["B"].capital_fraction

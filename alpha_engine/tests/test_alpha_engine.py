@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from alpha_engine.alpha import AlphaEngine, AlphaSignal, BaseAlphaStrategy, TrendAlphaStrategy
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.state_engine.state_models import MarketStateVector
@@ -73,7 +75,7 @@ def test_strategy_receives_market_state() -> None:
     assert strategy.last_state == state
 
 
-def test_trend_alpha_strategy_generates_expected_signal() -> None:
+def test_trend_alpha_strategy_generates_long_signal() -> None:
     strategy = TrendAlphaStrategy()
     state = _market_state(timestamp=2, trend_state=0.85, momentum_pressure=0.75)
 
@@ -85,6 +87,19 @@ def test_trend_alpha_strategy_generates_expected_signal() -> None:
     assert signal.direction == "long"
     assert signal.strength == state.trend_state
     assert signal.confidence == state.momentum_pressure
+
+
+def test_trend_alpha_strategy_generates_short_signal() -> None:
+    """Trend produces short when downtrend + momentum confirming down."""
+    strategy = TrendAlphaStrategy()
+    state = _market_state(timestamp=2, trend_state=0.2, momentum_pressure=0.3)
+
+    signal = strategy.generate_signal(state)
+
+    assert signal is not None
+    assert signal.direction == "short"
+    assert signal.strength == pytest.approx(0.8)  # 1.0 - trend_state
+    assert signal.confidence == pytest.approx(0.7)  # 1.0 - momentum_pressure
 
 
 def test_event_publishing_when_signal_exists() -> None:

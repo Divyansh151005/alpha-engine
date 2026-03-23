@@ -47,6 +47,26 @@ def volume_spike(volume: np.ndarray | list[float], window: int) -> float:
     return float(recent[-1] / baseline)
 
 
+def lower_wick_ratio(open_: float, high: float, low: float, close: float) -> float:
+    """Lower wick size as fraction of candle range. Long lower wick -> high value."""
+    candle_range = high - low
+    if candle_range < _EPS:
+        return 0.0
+    body_bottom = min(open_, close)
+    wick_size = body_bottom - low
+    return max(0.0, min(1.0, float(wick_size / candle_range)))
+
+
+def upper_wick_ratio(open_: float, high: float, low: float, close: float) -> float:
+    """Upper wick size as fraction of candle range. Long upper wick -> high value."""
+    candle_range = high - low
+    if candle_range < _EPS:
+        return 0.0
+    body_top = max(open_, close)
+    wick_size = high - body_top
+    return max(0.0, min(1.0, float(wick_size / candle_range)))
+
+
 def return_zscore(returns: np.ndarray | list[float], window: int) -> float:
     """Z-score of latest return against rolling return distribution."""
     if window <= 1:

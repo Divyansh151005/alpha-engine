@@ -10,8 +10,10 @@ import numpy as np
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.data.models import OHLCV
 from alpha_engine.features.microstructure import (
+    lower_wick_ratio,
     range_compression,
     return_zscore,
+    upper_wick_ratio,
     volume_spike,
 )
 from alpha_engine.features.trend import ema, momentum, trend_strength
@@ -30,6 +32,8 @@ class FeatureVector:
     range_compression: float
     volume_spike: float
     return_zscore: float
+    lower_wick_ratio: float
+    upper_wick_ratio: float
 
 
 class FeatureEngine:
@@ -55,6 +59,7 @@ class FeatureEngine:
             self.RANGE_WINDOW,
             self.VOLUME_WINDOW,
         )
+        self._open: deque[float] = deque(maxlen=self._required_candles)
         self._close: deque[float] = deque(maxlen=self._required_candles)
         self._high: deque[float] = deque(maxlen=self._required_candles)
         self._low: deque[float] = deque(maxlen=self._required_candles)
@@ -63,6 +68,7 @@ class FeatureEngine:
         self._event_bus.subscribe("market.candle", self._on_candle)
 
     def _on_candle(self, candle: OHLCV) -> None:
+        self._open.append(candle.open)
         self._close.append(candle.close)
         self._high.append(candle.high)
         self._low.append(candle.low)
@@ -77,6 +83,10 @@ class FeatureEngine:
         volume_arr = np.asarray(self._volume, dtype=np.float64)
         returns = calculate_returns(close_arr)
 
+        o, h, l, c = self._open[-1], self._high[-1], self._low[-1], self._close[-1]
+        low_wick = lower_wick_ratio(float(o), float(h), float(l), float(c))
+        up_wick = upper_wick_ratio(float(o), float(h), float(l), float(c))
+
         feature_vector = FeatureVector(
             timestamp=candle.timestamp,
             realized_vol=realized_volatility(returns, self.VOLATILITY_WINDOW),
@@ -89,6 +99,8 @@ class FeatureEngine:
             range_compression=range_compression(high_arr, low_arr, self.RANGE_WINDOW),
             volume_spike=volume_spike(volume_arr, self.VOLUME_WINDOW),
             return_zscore=return_zscore(returns, self.RETURN_ZSCORE_WINDOW),
+            lower_wick_ratio=low_wick,
+            upper_wick_ratio=up_wick,
         )
 
         if all(np.isfinite(value) for value in feature_vector.__dict__.values()):

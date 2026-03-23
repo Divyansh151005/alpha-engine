@@ -15,3 +15,7 @@ class MarketStateVector:
     liquidity_stress: float
     momentum_pressure: float
     compression_state: float
+    return_zscore: float = 0.0  # Raw signed zscore for mean reversion
+    lower_wick_ratio: float = 0.0  # Lower wick / range [0, 1]
+    upper_wick_ratio: float = 0.0  # Upper wick / range [0, 1]
+    volume_spike: float = 1.0  # Latest vol / rolling avg (1 = normal)

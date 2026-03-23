@@ -33,11 +33,13 @@ class RiskEngine:
         event_bus: EventBus,
         initial_equity: float = 100.0,
         equity_decay_per_update: float = 0.0,
+        force_full_exposure: bool = False,
     ) -> None:
         self._event_bus = event_bus
         self._equity = initial_equity
         self._peak_equity = initial_equity
         self._equity_decay = max(0.0, min(1.0, equity_decay_per_update))
+        self._force_full_exposure = force_full_exposure
 
         self._event_bus.subscribe("portfolio.position", self._handle_position)
 
@@ -57,7 +59,7 @@ class RiskEngine:
         drawdown = max(0.0, min(1.0, drawdown))
 
         # 4. Get factor and apply risk scaling
-        factor = _drawdown_factor(drawdown)
+        factor = 1.0 if self._force_full_exposure else _drawdown_factor(drawdown)
         final_positions: list[PositionAllocation] = []
         for pos in positions:
             final_fraction = pos.capital_fraction * factor

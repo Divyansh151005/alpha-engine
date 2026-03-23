@@ -11,14 +11,22 @@ from alpha_engine.features.feature_engine import FeatureVector
 # Numerical stability constants
 _MIN_VOL_FLOOR = 1e-9
 _MAX_SCALE = 10.0
+_MIN_SCALE = 0.0  # No floor by default
+_MIN_SCALE_DEBUG = 0.5  # Relax scaling for debug: never scale below 0.5
 
 
 class VolatilityTargetingEngine:
     """Adjust position sizes dynamically based on market volatility."""
 
-    def __init__(self, event_bus: EventBus, target_vol: float) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        target_vol: float,
+        min_scale: float | None = None,
+    ) -> None:
         self._event_bus = event_bus
         self._target_vol = target_vol
+        self._min_scale = min_scale if min_scale is not None else _MIN_SCALE
         self._latest_realized_vol: float | None = None
 
         self._event_bus.subscribe("portfolio.allocation", self._handle_allocation)
@@ -40,6 +48,7 @@ class VolatilityTargetingEngine:
             safe_vol = max(current_vol, _MIN_VOL_FLOOR)
             raw_scale = self._target_vol / safe_vol
             scale = min(raw_scale, _MAX_SCALE)
+        scale = max(scale, self._min_scale)
 
         adjusted: list[PositionAllocation] = []
         for a in allocations:
