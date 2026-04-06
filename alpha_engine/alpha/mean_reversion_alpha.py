@@ -1,4 +1,4 @@
-"""Mean reversion alpha strategy - zscore + wick + volume confluence for strong signals."""
+"""Mean reversion alpha from upstream return z-score."""
 
 from __future__ import annotations
 
@@ -6,56 +6,55 @@ from alpha_engine.alpha.alpha_signal import AlphaSignal
 from alpha_engine.alpha.base_alpha import BaseAlphaStrategy
 from alpha_engine.state_engine.state_models import MarketStateVector
 
-ZSCORE_THRESHOLD = 2.0
-WICK_THRESHOLD = 0.25  # Lower/upper wick must be >= 25% of range
-VOLUME_SPIKE_THRESHOLD = 1.15  # Volume >= 15% above average
-
-
 class MeanReversionAlphaStrategy(BaseAlphaStrategy):
-    """Mean reversion: confluence of large return, wick, volume. Triggers less often, stronger signals."""
+    """Thresholded mean reversion using precomputed return z-score."""
+
+    def __init__(self) -> None:
+        self._z_values: list[float] = []
 
     def on_market_state(self, state: MarketStateVector) -> None:
-        _ = state
+        pass
 
-    def generate_signal(self, state: MarketStateVector) -> AlphaSignal | None:
+    def generate_signal(self, state: MarketStateVector) -> AlphaSignal:
+        print(
+            "[MR INPUT] "
+            f"z={state.return_zscore}"
+        )
+        if abs(state.return_zscore) > 1.5:
+            print(
+                "[MR HIGH Z DETECTED] "
+                f"z={state.return_zscore}"
+            )
         z = state.return_zscore
-        vol_spike = state.volume_spike
-        lower_wick = state.lower_wick_ratio
-        upper_wick = state.upper_wick_ratio
+        self._z_values.append(z)
+        if len(self._z_values) % 100 == 0:
+            import numpy as np
 
-        # STRONG LONG: large negative return + long lower wick + volume spike
-        if (
-            z < -ZSCORE_THRESHOLD
-            and lower_wick >= WICK_THRESHOLD
-            and vol_spike >= VOLUME_SPIKE_THRESHOLD
-        ):
-            direction = "long"
-        # STRONG SHORT: large positive return + long upper wick + volume spike
-        elif (
-            z > ZSCORE_THRESHOLD
-            and upper_wick >= WICK_THRESHOLD
-            and vol_spike >= VOLUME_SPIKE_THRESHOLD
-        ):
-            direction = "short"
+            arr = np.array(self._z_values)
+            print(
+                "[Z DISTRIBUTION] "
+                f"count={len(arr)} "
+                f"mean={arr.mean():.4f} "
+                f"std={arr.std():.4f} "
+                f"min={arr.min():.4f} "
+                f"max={arr.max():.4f}"
+            )
+        if z > 2.0:
+            signal = -1.0
+        elif z < -2.0:
+            signal = 1.0
         else:
-            return None
+            signal = 0.0
 
-        # Strength: combine zscore + wick + volume_spike, normalize
-        z_component = min(abs(z) / 4.0, 1.0)
-        wick_component = lower_wick if direction == "long" else upper_wick
-        vol_component = min((vol_spike - 1.0) / 1.0, 1.0) if vol_spike > 1.0 else 0.0
-        raw_strength = (z_component + wick_component + max(0.0, vol_component)) / 3.0
-        strength = max(0.2, min(1.0, raw_strength))
-
-        # Confidence: higher when volatility high and volume high
-        vol_conf = state.volatility_state
-        vol_spike_conf = min(vol_spike / 2.0, 1.0) if vol_spike > 1.0 else 0.5
-        confidence = max(0.3, min(1.0, 0.5 * vol_conf + 0.5 * vol_spike_conf))
+        print(
+            "[MR SIGNAL] "
+            f"z={z} "
+            f"signal={signal}"
+        )
 
         return AlphaSignal(
             timestamp=state.timestamp,
             strategy_name=self.__class__.__name__,
-            direction=direction,
-            strength=strength,
-            confidence=confidence,
+            score=signal,
+            confidence=1.0,
         )

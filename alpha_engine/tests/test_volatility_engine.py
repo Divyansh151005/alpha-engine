@@ -20,6 +20,16 @@ def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector
         return_zscore=0.0,
         lower_wick_ratio=0.0,
         upper_wick_ratio=0.0,
+        rolling_return_5=0.0,
+        rolling_return_10=0.0,
+        rolling_return_20=0.0,
+        volatility_breakout=1.0,
+        momentum_acceleration=0.0,
+        mean_reversion_strength=0.0,
+        bollinger_band_distance=0.0,
+        range_expansion=1.0,
+        price_vs_recent_high_low=0.5,
+        ema_crossover_strength=0.0,
     )
 
 

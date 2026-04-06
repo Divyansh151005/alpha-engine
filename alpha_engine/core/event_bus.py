@@ -23,8 +23,10 @@ class EventBus:
 
     def publish(self, event_type: str, data: Any) -> None:
         """Publish data to all handlers; continue on handler errors."""
+        logger.info("[TRACE] EVENT OUT %s: %r", event_type, data)
         for handler in self._subscribers.get(event_type, []):
             try:
+                logger.info("[TRACE] EVENT IN %s: %r", event_type, data)
                 handler(data)
             except Exception as exc:  # pragma: no cover - error path is behaviorally tested
                 logger.exception(

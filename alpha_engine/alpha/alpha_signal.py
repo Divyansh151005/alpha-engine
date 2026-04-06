@@ -6,28 +6,45 @@ from dataclasses import dataclass
 
 _MIN_NORMALIZED = 0.0
 _MAX_NORMALIZED = 1.0
+_SCORE_MIN = -1.0
+_SCORE_MAX = 1.0
 _VALID_DIRECTIONS = {"long", "short", "flat"}
+
+
+def _score_to_direction(score: float) -> str:
+    """Derive direction from continuous score."""
+    if score > 0:
+        return "long"
+    if score < 0:
+        return "short"
+    return "flat"
 
 
 @dataclass(frozen=True)
 class AlphaSignal:
-    """Normalized strategy signal."""
+    """Score-based strategy signal. Positive score = long weight, negative = short weight."""
 
     timestamp: int
     strategy_name: str
-    direction: str
-    strength: float
-    confidence: float
+    score: float  # Continuous signal in [-1, 1]
+    confidence: float  # Signal reliability [0, 1]
 
     def __post_init__(self) -> None:
-        if self.direction not in _VALID_DIRECTIONS:
+        if not (_SCORE_MIN <= self.score <= _SCORE_MAX):
             raise ValueError(
-                f"direction must be one of {_VALID_DIRECTIONS}, got {self.direction!r}"
+                f"score must be within [{_SCORE_MIN}, {_SCORE_MAX}], got {self.score!r}"
             )
-        self._validate_normalized("strength", self.strength)
-        self._validate_normalized("confidence", self.confidence)
+        if not (_MIN_NORMALIZED <= self.confidence <= _MAX_NORMALIZED):
+            raise ValueError(
+                f"confidence must be within [0, 1], got {self.confidence!r}"
+            )
 
-    @staticmethod
-    def _validate_normalized(name: str, value: float) -> None:
-        if not (_MIN_NORMALIZED <= value <= _MAX_NORMALIZED):
-            raise ValueError(f"{name} must be within [0, 1], got {value!r}")
+    @property
+    def direction(self) -> str:
+        """Derived from score for backward compatibility."""
+        return _score_to_direction(self.score)
+
+    @property
+    def strength(self) -> float:
+        """Magnitude of signal [0, 1]."""
+        return abs(self.score)

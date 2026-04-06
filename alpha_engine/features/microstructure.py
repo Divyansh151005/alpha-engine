@@ -12,7 +12,7 @@ def range_compression(
     low: np.ndarray | list[float],
     window: int,
 ) -> float:
-    """Measure latest range relative to rolling average range."""
+    """Measure latest range relative to rolling average range. <1 = compressed, >1 = expanded."""
     if window <= 0:
         raise ValueError("window must be positive")
 
@@ -29,6 +29,38 @@ def range_compression(
     if abs(avg_range) < _EPS:
         return 0.0
     return float(recent[-1] / avg_range)
+
+
+def range_expansion(
+    high: np.ndarray | list[float],
+    low: np.ndarray | list[float],
+    window: int,
+) -> float:
+    """Range expansion ratio: current range / rolling avg. >1 = expanding (breakout setup)."""
+    return range_compression(high, low, window)
+
+
+def price_vs_recent_high_low(
+    close: np.ndarray | list[float],
+    high: np.ndarray | list[float],
+    low: np.ndarray | list[float],
+    window: int,
+) -> float:
+    """Position within recent range: 1 = at high, 0 = at low, 0.5 = middle."""
+    if window <= 0:
+        raise ValueError("window must be positive")
+    c = np.asarray(close, dtype=np.float64)
+    h = np.asarray(high, dtype=np.float64)
+    l_arr = np.asarray(low, dtype=np.float64)
+    if c.size < window or h.size < window or l_arr.size < window:
+        return float("nan")
+    recent_high = float(np.max(h[-window:]))
+    recent_low = float(np.min(l_arr[-window:]))
+    price = float(c[-1])
+    rng = recent_high - recent_low
+    if rng < _EPS:
+        return 0.5
+    return max(0.0, min(1.0, (price - recent_low) / rng))
 
 
 def volume_spike(volume: np.ndarray | list[float], window: int) -> float:
@@ -82,3 +114,48 @@ def return_zscore(returns: np.ndarray | list[float], window: int) -> float:
     if std < _EPS:
         return 0.0
     return float((recent[-1] - mean) / std)
+
+
+def mean_reversion_strength(
+    close: np.ndarray | list[float],
+    window: int = 20,
+) -> float:
+    """Distance from rolling mean as fraction of rolling std. High = stretched, expect reversion."""
+    if window <= 1:
+        raise ValueError("window must be > 1")
+    values = np.asarray(close, dtype=np.float64)
+    if values.size < window:
+        return float("nan")
+    recent = values[-window:]
+    mean = float(np.mean(recent))
+    std = float(np.std(recent))
+    if std < _EPS:
+        return 0.0
+    deviation = (recent[-1] - mean) / std
+    return float(deviation)
+
+
+def bollinger_band_distance(
+    close: np.ndarray | list[float],
+    window: int = 20,
+    num_std: float = 2.0,
+) -> float:
+    """Signed distance from price to middle band, in units of band width. >0 = above, <0 = below."""
+    if window <= 1:
+        raise ValueError("window must be > 1")
+    values = np.asarray(close, dtype=np.float64)
+    if values.size < window:
+        return float("nan")
+    recent = values[-window:]
+    mean = float(np.mean(recent))
+    std = float(np.std(recent))
+    if std < _EPS:
+        return 0.0
+    price = recent[-1]
+    upper = mean + num_std * std
+    lower = mean - num_std * std
+    band_width = upper - lower
+    if band_width < _EPS:
+        return 0.0
+    # Distance: +1 = at upper band, -1 = at lower band
+    return float((price - mean) / (num_std * std))

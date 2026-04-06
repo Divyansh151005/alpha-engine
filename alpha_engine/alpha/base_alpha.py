@@ -17,4 +17,4 @@ class BaseAlphaStrategy(ABC):
 
     @abstractmethod
     def generate_signal(self, state: MarketStateVector) -> AlphaSignal | None:
-        """Generate a trading signal for a given market state."""
+        """Generate a trading signal for a given market state. Return None for no signal."""

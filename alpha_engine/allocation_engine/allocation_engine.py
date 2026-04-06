@@ -1,26 +1,29 @@
-"""Dynamic capital allocator based on alpha signal strength and confidence."""
+"""Capital allocator that emits portfolio allocations from alpha signals."""
 
 from __future__ import annotations
 
 import math
-from collections import deque
 
 from alpha_engine.allocation_engine.allocation_models import PositionAllocation
 from alpha_engine.alpha.alpha_signal import AlphaSignal
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.core.logger import get_logger
+from alpha_engine.regime import RegimeState, RegimeType, get_regime_multipliers
 
 _EPS = 1e-9
-_CORRELATION_WINDOW = 50
 _logger = get_logger(__name__)
 
+# Strategy name -> regime type for weight adjustment (trend, breakout, mr)
+_STRATEGY_TO_REGIME_TYPE: dict[str, str] = {
+    "TrendAlphaStrategy": "trend",
+    "BreakoutAlphaStrategy": "breakout",
+    "MeanReversionAlphaStrategy": "mr",
+}
 
-def _direction_sign(direction: str) -> float:
-    if direction == "long":
-        return 1.0
-    if direction == "short":
-        return -1.0
-    return 0.0
+
+def _direction_sign(signal: AlphaSignal) -> float:
+    """Use score for direction: positive=long, negative=short."""
+    return max(-1.0, min(1.0, signal.score))
 
 
 def _corr(a: list[float], b: list[float]) -> float:
@@ -40,86 +43,52 @@ def _corr(a: list[float], b: list[float]) -> float:
 
 
 class CapitalAllocator:
-    """Allocate capital across strategies with correlation-aware weight adjustment."""
+    """Allocate capital across buffered strategy signals on each signal update."""
 
-    def __init__(self, event_bus: EventBus, correlation_window: int = _CORRELATION_WINDOW) -> None:
+    def __init__(self, event_bus: EventBus) -> None:
         self._event_bus = event_bus
-        self._correlation_window = correlation_window
-        self._event_bus.subscribe("alpha.signal", self._handle_signal)
-        self._active_signals: dict[str, AlphaSignal] = {}
-        self._signal_history: deque[dict[str, float]] = deque(maxlen=correlation_window)
-        self._last_timestamp: int | None = None
-        self._current_frame: dict[str, float] = {}
-        self._all_strategies: set[str] = set()
+        self._event_bus.subscribe("alpha.signal", self.on_signal)
+        self._event_bus.subscribe("market.regime", self._handle_regime)
+        # Public buffer for diagnostics and external inspection.
+        self.signals: dict[str, AlphaSignal] = {}
+        self._latest_regime: RegimeType | None = None
 
-    def _handle_signal(self, signal: AlphaSignal) -> None:
-        ts = signal.timestamp
-        sign = _direction_sign(signal.direction)
+    def _handle_regime(self, regime_state: RegimeState) -> None:
+        """Store latest regime for weight adjustment."""
+        self._latest_regime = regime_state.regime
 
-        if self._last_timestamp is not None and ts != self._last_timestamp:
-            frame = {s: self._current_frame.get(s, 0.0) for s in self._all_strategies}
-            if frame:
-                self._signal_history.append(frame)
-
-        self._all_strategies.add(signal.strategy_name)
-        self._current_frame[signal.strategy_name] = sign
-        self._last_timestamp = ts
-        self._active_signals[signal.strategy_name] = signal
+    def on_signal(self, signal: AlphaSignal) -> None:
+        """Buffer latest signal and emit updated allocation snapshot."""
+        self.signals[signal.strategy_name] = signal
         self._recompute_and_publish()
 
     def _recompute_and_publish(self) -> None:
-        if not self._active_signals:
+        if not self.signals:
             return
 
         allocations = self._compute_allocations()
+        _logger.info(
+            "allocation.generated count=%s strategies=%s",
+            len(allocations),
+            [a.strategy_name for a in allocations],
+        )
         self._event_bus.publish("portfolio.allocation", allocations)
 
     def _compute_allocations(self) -> list[PositionAllocation]:
-        signals = list(self._active_signals.values())
-        if not signals:
+        if not self.signals:
             return []
 
-        raw_weights = [max(0.0, s.strength * s.confidence) + _EPS for s in signals]
-        names = [s.strategy_name for s in signals]
-
-        if len(self._signal_history) >= 2:
-            series = {n: [] for n in names}
-            for frame in self._signal_history:
-                for n in names:
-                    series[n].append(frame.get(n, 0.0))
-
-            avg_corrs: dict[str, float] = {}
-            for i, name in enumerate(names):
-                cors = []
-                for j, other in enumerate(names):
-                    if i != j and other in series and len(series[name]) == len(series[other]):
-                        c = _corr(series[name], series[other])
-                        cors.append(max(0.0, c))
-                avg_corr = sum(cors) / len(cors) if cors else 0.0
-                avg_corrs[name] = min(1.0, avg_corr)
-
-            adjusted_weights = [
-                rw * (1.0 - avg_corrs.get(n, 0.0))
-                for rw, n in zip(raw_weights, names)
-            ]
-            for rw, adj, n in zip(raw_weights, adjusted_weights, names):
-                _logger.info(
-                    "allocation.correlation name=%s raw_weight=%.4f avg_corr=%.4f adjusted_weight=%.4f",
-                    n,
-                    rw,
-                    avg_corrs.get(n, 0.0),
-                    adj,
-                )
-            weights = [max(_EPS, w) for w in adjusted_weights]
-        else:
-            weights = raw_weights
+        signals = list(self.signals.values())
+        if not signals:
+            return []
+        weights = [max(_EPS, abs(s.score)) for s in signals]
 
         total = sum(weights)
         if total <= 0:
             total = 1.0
 
         allocations: list[PositionAllocation] = []
-        for sig, weight in zip(signals, weights):
+        for sig, weight in sorted(zip(signals, weights), key=lambda x: x[0].strategy_name):
             capital_fraction = weight / total
             capital_fraction = max(0.0, min(1.0, capital_fraction))
             risk_weight = max(0.0, min(1.0, sig.confidence))
@@ -127,11 +96,14 @@ class CapitalAllocator:
                 PositionAllocation(
                     timestamp=sig.timestamp,
                     strategy_name=sig.strategy_name,
-                    direction=sig.direction,
+                    direction="long" if sig.score > 0 else "short",
                     capital_fraction=capital_fraction,
                     risk_weight=risk_weight,
                 )
             )
+
+        # Regime-based weight adjustment
+        allocations = self._apply_regime_weights(allocations)
 
         total_alloc = sum(a.capital_fraction for a in allocations)
         if total_alloc > 1.0 + _EPS:
@@ -147,4 +119,51 @@ class CapitalAllocator:
                 for a in allocations
             ]
 
-        return sorted(allocations, key=lambda a: a.strategy_name)
+        return allocations
+
+    def _apply_regime_weights(
+        self, allocations: list[PositionAllocation]
+    ) -> list[PositionAllocation]:
+        """Apply regime-based multipliers to capital fractions and re-normalize."""
+        regime = self._latest_regime
+        if regime is None:
+            return allocations
+        multipliers = get_regime_multipliers(regime)
+
+        adjusted: list[PositionAllocation] = []
+        for a in allocations:
+            regime_type = _STRATEGY_TO_REGIME_TYPE.get(a.strategy_name, "trend")
+            mult = multipliers.get(regime_type, 1.0)
+            new_frac = max(0.0, min(1.0, a.capital_fraction * mult))
+            adjusted.append(
+                PositionAllocation(
+                    timestamp=a.timestamp,
+                    strategy_name=a.strategy_name,
+                    direction=a.direction,
+                    capital_fraction=new_frac,
+                    risk_weight=a.risk_weight,
+                )
+            )
+            _logger.info(
+                "allocation.regime strategy=%s regime=%s mult=%.2f orig=%.4f adj=%.4f",
+                a.strategy_name,
+                regime.value,
+                mult,
+                a.capital_fraction,
+                new_frac,
+            )
+
+        total = sum(x.capital_fraction for x in adjusted)
+        if total <= _EPS:
+            return allocations
+        scale = 1.0 / total
+        return [
+            PositionAllocation(
+                timestamp=a.timestamp,
+                strategy_name=a.strategy_name,
+                direction=a.direction,
+                capital_fraction=a.capital_fraction * scale,
+                risk_weight=a.risk_weight,
+            )
+            for a in adjusted
+        ]

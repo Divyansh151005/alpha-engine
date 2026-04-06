@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from alpha_engine.allocation_engine.allocation_models import PositionAllocation
 from alpha_engine.core.event_bus import EventBus
+from alpha_engine.core.logger import trace_limit
 from alpha_engine.risk_engine.risk_models import RiskState
 
 # Numerical stability
@@ -63,6 +64,7 @@ class RiskEngine:
         final_positions: list[PositionAllocation] = []
         for pos in positions:
             final_fraction = pos.capital_fraction * factor
+            trace_limit("RiskEngine final_fraction clamp", "max(0,min(1,...))")
             final_fraction = max(0.0, min(1.0, final_fraction))
             final_positions.append(
                 PositionAllocation(

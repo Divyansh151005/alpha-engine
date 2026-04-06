@@ -76,3 +76,50 @@ def volatility_percentile(vol_series: np.ndarray | list[float]) -> float:
     latest = finite[-1]
     rank = np.count_nonzero(finite <= latest)
     return float((rank / finite.size) * 100.0)
+
+
+def rolling_return(
+    prices: np.ndarray | list[float], window: int
+) -> float:
+    """Rolling return over the last `window` periods."""
+    if window <= 0:
+        raise ValueError("window must be positive")
+    values = np.asarray(prices, dtype=np.float64)
+    if values.size <= window:
+        return float("nan")
+    base = values[-(window + 1)]
+    if abs(base) < _EPS:
+        return 0.0
+    return float((values[-1] / base) - 1.0)
+
+
+def volatility_breakout_signal(
+    realized_vol: np.ndarray | list[float],
+    baseline_window: int = 20,
+) -> float:
+    """Latest vol vs rolling mean: >1 = expansion (breakout), <1 = compression."""
+    if baseline_window <= 0:
+        raise ValueError("baseline_window must be positive")
+    values = np.asarray(realized_vol, dtype=np.float64)
+    if values.size < baseline_window:
+        return float("nan")
+    recent = values[-baseline_window:]
+    mean_vol = float(np.mean(recent))
+    if abs(mean_vol) < _EPS:
+        return 1.0
+    return float(recent[-1] / mean_vol)
+
+
+def returns_zscore(returns: np.ndarray | list[float], window: int) -> float:
+    """Z-score of the latest return against rolling return distribution."""
+    if window <= 1:
+        raise ValueError("window must be greater than one")
+    values = np.asarray(returns, dtype=np.float64)
+    if values.size < window:
+        return float("nan")
+    recent = values[-window:]
+    mean = float(np.mean(recent))
+    std = float(np.std(recent))
+    if std < _EPS:
+        return 0.0
+    return float((recent[-1] - mean) / std)

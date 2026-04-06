@@ -110,6 +110,18 @@ class MarketStateEngine:
         up_wick = max(0.0, min(1.0, self._sanitize_nonnegative(feature_vector.upper_wick_ratio)))
         vol_spike = max(0.0, self._sanitize_nonnegative(feature_vector.volume_spike))
 
+        # Phase 11 - pass through raw features for alpha signals
+        rolling_5 = self._sanitize(feature_vector.rolling_return_5)
+        rolling_10 = self._sanitize(feature_vector.rolling_return_10)
+        rolling_20 = self._sanitize(feature_vector.rolling_return_20)
+        vol_breakout = max(0.0, self._sanitize_nonnegative(feature_vector.volatility_breakout))
+        mom_accel = self._sanitize(feature_vector.momentum_acceleration)
+        mr_strength = self._sanitize(feature_vector.mean_reversion_strength)
+        bb_dist = self._sanitize(feature_vector.bollinger_band_distance)
+        range_exp = max(0.0, self._sanitize_nonnegative(feature_vector.range_expansion))
+        price_vs_range = max(0.0, min(1.0, self._sanitize(feature_vector.price_vs_recent_high_low)))
+        ema_cross = self._sanitize(feature_vector.ema_crossover_strength)
+
         market_state_vector = MarketStateVector(
             timestamp=feature_vector.timestamp,
             trend_state=trend_state,
@@ -121,6 +133,16 @@ class MarketStateEngine:
             lower_wick_ratio=low_wick,
             upper_wick_ratio=up_wick,
             volume_spike=vol_spike,
+            rolling_return_5=rolling_5,
+            rolling_return_10=rolling_10,
+            rolling_return_20=rolling_20,
+            volatility_breakout=vol_breakout,
+            momentum_acceleration=mom_accel,
+            mean_reversion_strength=mr_strength,
+            bollinger_band_distance=bb_dist,
+            range_expansion=range_exp,
+            price_vs_recent_high_low=price_vs_range,
+            ema_crossover_strength=ema_cross,
         )
         self._event_bus.publish("market.state", market_state_vector)
 

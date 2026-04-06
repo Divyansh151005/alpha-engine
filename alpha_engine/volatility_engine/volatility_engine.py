@@ -6,6 +6,7 @@ import math
 
 from alpha_engine.allocation_engine.allocation_models import PositionAllocation
 from alpha_engine.core.event_bus import EventBus
+from alpha_engine.core.logger import trace_limit
 from alpha_engine.features.feature_engine import FeatureVector
 
 # Numerical stability constants
@@ -47,12 +48,15 @@ class VolatilityTargetingEngine:
         else:
             safe_vol = max(current_vol, _MIN_VOL_FLOOR)
             raw_scale = self._target_vol / safe_vol
+            trace_limit("VolatilityTargetingEngine _MAX_SCALE", _MAX_SCALE)
             scale = min(raw_scale, _MAX_SCALE)
+        trace_limit("VolatilityTargetingEngine _min_scale floor", self._min_scale)
         scale = max(scale, self._min_scale)
 
         adjusted: list[PositionAllocation] = []
         for a in allocations:
             adjusted_fraction = a.capital_fraction * scale
+            trace_limit("VolatilityTargetingEngine adjusted_fraction clamp", "max(0,min(1,...))")
             adjusted_fraction = max(0.0, min(1.0, adjusted_fraction))
             adjusted.append(
                 PositionAllocation(

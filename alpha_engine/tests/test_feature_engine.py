@@ -68,7 +68,7 @@ def test_feature_vector_generation() -> None:
     received: list[FeatureVector] = []
     bus.subscribe("market.features", lambda fv: received.append(fv))
 
-    total = FeatureEngine.EMA_LONG_PERIOD + 5
+    total = FeatureEngine.EMA_LONG_PERIOD + 10  # Sufficient for all Phase 11 features
     for i in range(total):
         bus.publish("market.candle", _make_candle(i))
 
@@ -84,6 +84,17 @@ def test_feature_vector_generation() -> None:
     assert np.isfinite(latest.return_zscore)
     assert 0.0 <= latest.lower_wick_ratio <= 1.0
     assert 0.0 <= latest.upper_wick_ratio <= 1.0
+    # Phase 11 features
+    assert np.isfinite(latest.rolling_return_5)
+    assert np.isfinite(latest.rolling_return_10)
+    assert np.isfinite(latest.rolling_return_20)
+    assert np.isfinite(latest.volatility_breakout)
+    assert np.isfinite(latest.momentum_acceleration)
+    assert np.isfinite(latest.mean_reversion_strength)
+    assert np.isfinite(latest.bollinger_band_distance)
+    assert np.isfinite(latest.range_expansion)
+    assert 0.0 <= latest.price_vs_recent_high_low <= 1.0
+    assert np.isfinite(latest.ema_crossover_strength)
 
 
 def test_wick_ratio_calculation() -> None:
@@ -108,7 +119,7 @@ def test_event_published_when_candle_received() -> None:
 
     bus.subscribe("market.features", _capture)
 
-    for i in range(FeatureEngine.EMA_LONG_PERIOD + 1):
+    for i in range(FeatureEngine.EMA_LONG_PERIOD + 10):
         bus.publish("market.candle", _make_candle(i))
 
     assert published_count >= 1

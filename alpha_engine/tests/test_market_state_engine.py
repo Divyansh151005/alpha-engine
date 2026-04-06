@@ -23,6 +23,16 @@ def _feature_vector(
     return_zscore: float = 1.2,
     lower_wick_ratio: float = 0.0,
     upper_wick_ratio: float = 0.0,
+    rolling_return_5: float = 0.0,
+    rolling_return_10: float = 0.0,
+    rolling_return_20: float = 0.0,
+    volatility_breakout: float = 1.0,
+    momentum_acceleration: float = 0.0,
+    mean_reversion_strength: float = 0.0,
+    bollinger_band_distance: float = 0.0,
+    range_expansion: float = 1.0,
+    price_vs_recent_high_low: float = 0.5,
+    ema_crossover_strength: float = 0.0,
 ) -> FeatureVector:
     return FeatureVector(
         timestamp=timestamp,
@@ -35,6 +45,16 @@ def _feature_vector(
         return_zscore=return_zscore,
         lower_wick_ratio=lower_wick_ratio,
         upper_wick_ratio=upper_wick_ratio,
+        rolling_return_5=rolling_return_5,
+        rolling_return_10=rolling_return_10,
+        rolling_return_20=rolling_return_20,
+        volatility_breakout=volatility_breakout,
+        momentum_acceleration=momentum_acceleration,
+        mean_reversion_strength=mean_reversion_strength,
+        bollinger_band_distance=bollinger_band_distance,
+        range_expansion=range_expansion,
+        price_vs_recent_high_low=price_vs_recent_high_low,
+        ema_crossover_strength=ema_crossover_strength,
     )
 
 

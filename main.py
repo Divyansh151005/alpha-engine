@@ -21,8 +21,10 @@ from alpha_engine.alpha import (
 from alpha_engine.volatility_engine import VolatilityTargetingEngine
 from alpha_engine.risk_engine import RiskEngine
 from alpha_engine.core.logger import get_logger
+from alpha_engine.regime import RegimeEngine, RegimeState
 from alpha_engine.state_engine import MarketStateEngine, MarketStateVector
 from alpha_engine.backtest import BacktestEngine
+from alpha_engine.filters import SignalFilter
 
 run_backtest = True
 # Phase 8.6: Force signal injection debug (disabled for Phase 9.1 alpha visibility)
@@ -43,13 +45,18 @@ def main() -> None:
 
     event_bus = EventBus()
     FeatureEngine(event_bus=event_bus)
+    RegimeEngine(event_bus=event_bus)
     MarketStateEngine(event_bus=event_bus)
     strategies = [
         TrendAlphaStrategy(),
         MeanReversionAlphaStrategy(),
         BreakoutAlphaStrategy(),
     ]
-    AlphaEngine(event_bus=event_bus, strategies=strategies)
+    AlphaEngine(
+        event_bus=event_bus,
+        strategies=strategies,
+        signal_filter=SignalFilter(),
+    )
     CapitalAllocator(event_bus=event_bus)
     VolatilityTargetingEngine(event_bus=event_bus, target_vol=0.3)
     RiskEngine(event_bus=event_bus)
@@ -62,7 +69,15 @@ def main() -> None:
     def _on_market_state(market_state_vector: MarketStateVector) -> None:
         logger.info("Market state computed timestamp=%s", market_state_vector.timestamp)
 
+    def _on_regime(regime_state: RegimeState) -> None:
+        logger.info(
+            "Market regime=%s timestamp=%s",
+            regime_state.regime.value,
+            regime_state.timestamp,
+        )
+
     event_bus.subscribe("market.state", _on_market_state)
+    event_bus.subscribe("market.regime", _on_regime)
 
     def _on_alpha_signal(signal: AlphaSignal) -> None:
         logger.info(
@@ -119,7 +134,16 @@ def main() -> None:
                     result.metrics.get("avg_position_size", 0),
                     result.metrics.get("time_in_market", 0))
         print("Backtest metrics:")
-        for key in ("total_return", "sharpe_ratio", "trade_count", "avg_position_size", "time_in_market"):
+        for key in (
+            "total_return",
+            "sharpe_ratio",
+            "trade_count",
+            "avg_position_size",
+            "time_in_market",
+            "turnover",
+            "total_cost",
+            "cost_impact",
+        ):
             if key in result.metrics:
                 val = result.metrics[key]
                 if key == "time_in_market":
