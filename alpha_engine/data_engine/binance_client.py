@@ -26,12 +26,19 @@ class BinanceHistoricalClient:
         self._max_retries = max_retries
         self._retry_delay_sec = retry_delay_sec
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int) -> list[OHLCV]:
-        """Fetch latest candles for symbol/timeframe."""
+    def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        since: int | None = None,
+    ) -> list[OHLCV]:
+        """Fetch candles for symbol/timeframe (oldest-first). If ``since`` is set, from that ms timestamp."""
         rows = self._run_with_retries(
             lambda: self._exchange.fetch_ohlcv(
                 symbol=symbol,
                 timeframe=timeframe,
+                since=since,
                 limit=limit,
             )
         )

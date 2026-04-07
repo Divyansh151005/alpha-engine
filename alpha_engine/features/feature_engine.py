@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -51,6 +52,7 @@ class FeatureVector:
     """Computed market-state features at a given timestamp."""
 
     timestamp: int
+    symbol: str | None
     realized_vol: float
     atr: float
     trend_strength: float
@@ -64,6 +66,8 @@ class FeatureVector:
     rolling_return_5: float
     rolling_return_10: float
     rolling_return_20: float
+    regime_trend_strength: float
+    latest_bar_return: float
     volatility_breakout: float
     momentum_acceleration: float
     mean_reversion_strength: float
@@ -71,6 +75,8 @@ class FeatureVector:
     range_expansion: float
     price_vs_recent_high_low: float
     ema_crossover_strength: float
+    funding_rate: float
+    oi_change: float
 
 
 class FeatureEngine:
@@ -108,10 +114,17 @@ class FeatureEngine:
         self._low: deque[float] = deque(maxlen=self._required_candles)
         self._volume: deque[float] = deque(maxlen=self._required_candles)
         self._rolling_realized_vol: deque[float] = deque(maxlen=_VOL_BREAKOUT_BASELINE + 5)
+        self._last_open_interest: float | None = None
+        self._last_candle_symbol: str | None = None
 
         self._event_bus.subscribe("market.candle", self._on_candle)
 
     def _on_candle(self, candle: OHLCV) -> None:
+        sym = candle.symbol
+        if self._last_candle_symbol is not None and sym != self._last_candle_symbol:
+            self._last_open_interest = None
+        self._last_candle_symbol = sym
+
         self._open.append(candle.open)
         self._close.append(candle.close)
         self._high.append(candle.high)
@@ -126,6 +139,11 @@ class FeatureEngine:
         low_arr = np.asarray(self._low, dtype=np.float64)
         volume_arr = np.asarray(self._volume, dtype=np.float64)
         returns = calculate_returns(close_arr)
+        latest_bar_return = float(returns[-1]) if returns.size > 0 else 0.0
+        rr20_raw = rolling_return(close_arr, 20)
+        regime_trend_strength = (
+            float(abs(rr20_raw)) if np.isfinite(rr20_raw) else 0.0
+        )
         rv = realized_volatility(returns, self.VOLATILITY_WINDOW)
         self._rolling_realized_vol.append(rv)
         vol_breakout_val = (
@@ -138,8 +156,28 @@ class FeatureEngine:
         low_wick = lower_wick_ratio(float(o), float(h), float(l), float(c))
         up_wick = upper_wick_ratio(float(o), float(h), float(l), float(c))
 
+        _fr = getattr(candle, "funding_rate", None)
+        funding_f = (
+            float(_fr)
+            if _fr is not None and math.isfinite(float(_fr))
+            else float("nan")
+        )
+
+        _oi_raw = getattr(candle, "open_interest", None)
+        oi_change = float("nan")
+        if _oi_raw is not None and math.isfinite(float(_oi_raw)):
+            cur_oi = float(_oi_raw)
+            if (
+                self._last_open_interest is not None
+                and math.isfinite(self._last_open_interest)
+                and self._last_open_interest > 0.0
+            ):
+                oi_change = (cur_oi - self._last_open_interest) / self._last_open_interest
+            self._last_open_interest = cur_oi
+
         feature_vector = FeatureVector(
             timestamp=candle.timestamp,
+            symbol=candle.symbol,
             realized_vol=rv,
             atr=atr(high_arr, low_arr, close_arr, self.ATR_WINDOW),
             trend_strength=trend_strength(
@@ -155,6 +193,8 @@ class FeatureEngine:
             rolling_return_5=rolling_return(close_arr, 5),
             rolling_return_10=rolling_return(close_arr, 10),
             rolling_return_20=rolling_return(close_arr, 20),
+            regime_trend_strength=regime_trend_strength,
+            latest_bar_return=latest_bar_return,
             volatility_breakout=vol_breakout_val,
             momentum_acceleration=momentum_acceleration(close_arr, _MOM_ACCEL_SHORT, _MOM_ACCEL_LONG),
             mean_reversion_strength=mean_reversion_strength(close_arr, _MR_STRENGTH_WINDOW),
@@ -162,7 +202,14 @@ class FeatureEngine:
             range_expansion=range_expansion(high_arr, low_arr, self.RANGE_WINDOW),
             price_vs_recent_high_low=price_vs_recent_high_low(close_arr, high_arr, low_arr, _PRICE_VS_RANGE_WINDOW),
             ema_crossover_strength=ema_crossover_strength(close_arr, _EMA_CROSS_SHORT, _EMA_CROSS_LONG),
+            funding_rate=funding_f,
+            oi_change=oi_change,
         )
 
-        if all(np.isfinite(value) for value in feature_vector.__dict__.values()):
+        core = {
+            k: v
+            for k, v in feature_vector.__dict__.items()
+            if k not in ("funding_rate", "oi_change", "symbol")
+        }
+        if all(np.isfinite(value) for value in core.values()):
             self._event_bus.publish("market.features", feature_vector)

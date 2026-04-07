@@ -25,6 +25,7 @@ def _market_state(
         liquidity_stress=0.4,
         momentum_pressure=0.5,
         compression_state=0.5,
+        trend_strength=0.01,
     )
 
 

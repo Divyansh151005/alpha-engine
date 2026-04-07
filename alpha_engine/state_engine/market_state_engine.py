@@ -114,6 +114,10 @@ class MarketStateEngine:
         rolling_5 = self._sanitize(feature_vector.rolling_return_5)
         rolling_10 = self._sanitize(feature_vector.rolling_return_10)
         rolling_20 = self._sanitize(feature_vector.rolling_return_20)
+        trend_strength_regime = max(
+            0.0, self._sanitize_nonnegative(feature_vector.regime_trend_strength)
+        )
+        latest_bar_ret = self._sanitize(feature_vector.latest_bar_return)
         vol_breakout = max(0.0, self._sanitize_nonnegative(feature_vector.volatility_breakout))
         mom_accel = self._sanitize(feature_vector.momentum_acceleration)
         mr_strength = self._sanitize(feature_vector.mean_reversion_strength)
@@ -121,6 +125,12 @@ class MarketStateEngine:
         range_exp = max(0.0, self._sanitize_nonnegative(feature_vector.range_expansion))
         price_vs_range = max(0.0, min(1.0, self._sanitize(feature_vector.price_vs_recent_high_low)))
         ema_cross = self._sanitize(feature_vector.ema_crossover_strength)
+        fund_r = float(feature_vector.funding_rate)
+        if not isfinite(fund_r):
+            fund_r = float("nan")
+        oi_ch = float(feature_vector.oi_change)
+        if not isfinite(oi_ch):
+            oi_ch = float("nan")
 
         market_state_vector = MarketStateVector(
             timestamp=feature_vector.timestamp,
@@ -136,6 +146,8 @@ class MarketStateEngine:
             rolling_return_5=rolling_5,
             rolling_return_10=rolling_10,
             rolling_return_20=rolling_20,
+            trend_strength=trend_strength_regime,
+            latest_bar_return=latest_bar_ret,
             volatility_breakout=vol_breakout,
             momentum_acceleration=mom_accel,
             mean_reversion_strength=mr_strength,
@@ -143,6 +155,9 @@ class MarketStateEngine:
             range_expansion=range_exp,
             price_vs_recent_high_low=price_vs_range,
             ema_crossover_strength=ema_cross,
+            funding_rate=fund_r,
+            oi_change=oi_ch,
+            symbol=feature_vector.symbol,
         )
         self._event_bus.publish("market.state", market_state_vector)
 

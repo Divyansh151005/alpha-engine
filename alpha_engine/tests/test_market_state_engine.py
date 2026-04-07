@@ -16,6 +16,7 @@ from alpha_engine.state_engine.state_models import MarketStateVector
 
 def _feature_vector(
     timestamp: int = 1700000000000,
+    symbol: str | None = None,
     realized_vol: float = 0.2,
     trend_strength: float = 0.1,
     momentum: float = 0.02,
@@ -36,6 +37,7 @@ def _feature_vector(
 ) -> FeatureVector:
     return FeatureVector(
         timestamp=timestamp,
+        symbol=symbol,
         realized_vol=realized_vol,
         atr=1.0,
         trend_strength=trend_strength,
@@ -48,6 +50,8 @@ def _feature_vector(
         rolling_return_5=rolling_return_5,
         rolling_return_10=rolling_return_10,
         rolling_return_20=rolling_return_20,
+        regime_trend_strength=0.0,
+        latest_bar_return=0.0,
         volatility_breakout=volatility_breakout,
         momentum_acceleration=momentum_acceleration,
         mean_reversion_strength=mean_reversion_strength,
@@ -55,6 +59,8 @@ def _feature_vector(
         range_expansion=range_expansion,
         price_vs_recent_high_low=price_vs_recent_high_low,
         ema_crossover_strength=ema_crossover_strength,
+        funding_rate=float("nan"),
+        oi_change=float("nan"),
     )
 
 
@@ -83,6 +89,15 @@ def test_market_state_generation_and_bounds() -> None:
     assert 0.0 <= latest.liquidity_stress <= 1.0
     assert 0.0 <= latest.momentum_pressure <= 1.0
     assert 0.0 <= latest.compression_state <= 1.0
+
+
+def test_symbol_propagates_from_features_to_market_state() -> None:
+    event_bus = EventBus()
+    _ = MarketStateEngine(event_bus=event_bus)
+    received: list[MarketStateVector] = []
+    event_bus.subscribe("market.state", lambda state: received.append(state))
+    event_bus.publish("market.features", _feature_vector(symbol="ETH/USDT"))
+    assert received and received[-1].symbol == "ETH/USDT"
 
 
 def test_event_publishing() -> None:

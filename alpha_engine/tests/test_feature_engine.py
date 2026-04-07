@@ -95,6 +95,7 @@ def test_feature_vector_generation() -> None:
     assert np.isfinite(latest.range_expansion)
     assert 0.0 <= latest.price_vs_recent_high_low <= 1.0
     assert np.isfinite(latest.ema_crossover_strength)
+    assert latest.symbol == "BTC/USDT"
 
 
 def test_wick_ratio_calculation() -> None:

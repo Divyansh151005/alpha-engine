@@ -11,6 +11,7 @@ from alpha_engine.volatility_engine import VolatilityTargetingEngine
 def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector:
     return FeatureVector(
         timestamp=timestamp,
+        symbol=None,
         realized_vol=realized_vol,
         atr=0.0,
         trend_strength=0.0,
@@ -23,6 +24,8 @@ def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector
         rolling_return_5=0.0,
         rolling_return_10=0.0,
         rolling_return_20=0.0,
+        regime_trend_strength=0.0,
+        latest_bar_return=0.0,
         volatility_breakout=1.0,
         momentum_acceleration=0.0,
         mean_reversion_strength=0.0,
@@ -30,6 +33,8 @@ def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector
         range_expansion=1.0,
         price_vs_recent_high_low=0.5,
         ema_crossover_strength=0.0,
+        funding_rate=float("nan"),
+        oi_change=float("nan"),
     )
 
 

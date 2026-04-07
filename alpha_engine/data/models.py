@@ -17,4 +17,8 @@ class OHLCV:
     low: float
     close: float
     volume: float
+    # Last known USDT-M funding rate at or before this bar's timestamp (no lookahead).
+    funding_rate: float | None = None
+    # Last known USDT-M open interest (contracts) at or before this bar's timestamp.
+    open_interest: float | None = None
 

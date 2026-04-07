@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -12,6 +13,7 @@ from alpha_engine.alpha import (
     BreakoutAlphaStrategy,
     MeanReversionAlphaStrategy,
     TrendAlphaStrategy,
+    MomentumPersistenceAlphaStrategy,
 )
 from alpha_engine.alpha.base_alpha import BaseAlphaStrategy
 from alpha_engine.core.event_bus import EventBus
@@ -20,7 +22,7 @@ from alpha_engine.data.models import OHLCV
 from alpha_engine.features import FeatureEngine
 from alpha_engine.filters import SignalFilter
 from alpha_engine.regime import RegimeEngine
-from alpha_engine.state_engine import MarketStateEngine
+from alpha_engine.state_engine import MarketStateEngine, MarketStateVector
 
 # Numerical stability
 _EPS = 1e-12
@@ -29,8 +31,11 @@ _SIGNAL_DELTA_BASE_THRESHOLD = 0.03
 _STRONG_SIGNAL_DELTA_BYPASS = 0.6
 _SAME_DIRECTION_MIN_DELTA = 0.02
 _STRONG_REVERSAL_SIGNAL_THRESHOLD = 0.6
-_ENTRY_SIGNAL_THRESHOLD = 0.75
+_ENTRY_SIGNAL_THRESHOLD = 0.4
 _EXIT_SIGNAL_THRESHOLD = 0.3
+# Execution: trade only when current net signal is in top decile vs rolling history (not raw magnitude).
+_SIGNAL_RANK_WINDOW = 50
+_SIGNAL_RANK_MIN_PERCENTILE = 0.9
 
 MAX_STEP = 0.2
 HOLD_THRESHOLD = 0.2
@@ -42,8 +47,19 @@ _EXEC_SAME_DIR_MIN_DELTA = 0.03
 
 _logger = get_logger(__name__)
 
-# Minimum bars between executed trades (structural throttle).
-MIN_HOLD_STEPS = 3
+# After entry, ignore new signals until this many bars have passed (align hold with prediction horizon).
+MIN_HOLD_STEPS = 12
+# Default minimum bars between executed trades when ``min_steps_between_trades`` is not passed.
+_DEFAULT_MIN_STEPS_BETWEEN_TRADES = 3
+
+
+def _regime_scale_from_rr20_strength(regime_strength: float) -> float:
+    """Scale exposure by |rr20| band: weak → smaller size, strong → full (no trade removal)."""
+    if regime_strength < 0.002:
+        return 0.3
+    if regime_strength < 0.005:
+        return 0.6
+    return 1.0
 
 
 def compute_target_position(
@@ -51,20 +67,26 @@ def compute_target_position(
     current_position: float,
     *,
     log_validation: bool = False,
+    rolling_return_20: float | None = None,
 ) -> float:
-    """Flat unless |signal| >= entry threshold; linear size from signal (long and short)."""
+    """Map |signal| to target fraction in [-0.8, 0.8]; flat when |signal| < 0.2 (linear scale).
+
+    When ``rolling_return_20`` is set, multiply the signal-sized position by a regime factor
+    from ``abs(rolling_return_20)``. When ``None``, regime scaling is skipped (factor 1.0).
+    """
     _ = log_validation, current_position
-    if abs(signal) < _ENTRY_SIGNAL_THRESHOLD:
+    strength = abs(signal)
+    if strength < 0.2:
         return 0.0
-    target_position = signal * 0.8
-    target_position = max(-1.0, min(1.0, target_position))
-    print(
-        "[STRONG REGION] "
-        f"signal={signal} "
-        f"current={current_position} "
-        f"target={target_position}"
-    )
-    return target_position
+    scaled = (strength - 0.2) / (1.0 - 0.2)
+    direction = 1.0 if signal > 0.0 else -1.0
+    position = scaled * 0.8 * direction
+    if rolling_return_20 is not None:
+        rr20 = float(rolling_return_20)
+        regime_strength = abs(rr20) if math.isfinite(rr20) else 0.0
+        regime_scale = _regime_scale_from_rr20_strength(regime_strength)
+        position = position * regime_scale
+    return max(-1.0, min(1.0, position))
 
 
 @dataclass
@@ -73,6 +95,7 @@ class BacktestResult:
 
     equity_curve: list[tuple[int, float]] = field(default_factory=list)
     metrics: dict[str, float] = field(default_factory=dict)
+    trade_returns: list[float] = field(default_factory=list)
 
 
 class StorageProtocol(Protocol):
@@ -111,6 +134,14 @@ def _sign_f(x: float) -> float:
     if x < -_EPS:
         return -1.0
     return 0.0
+
+
+def _empirical_percentile_rank_le(window: list[float], value: float) -> float:
+    """Fraction of window values <= value (inclusive). Window non-empty."""
+    n = len(window)
+    if n == 0:
+        return 0.0
+    return sum(1 for x in window if x <= value) / n
 
 
 _TREND_KEY = "TrendAlphaStrategy"
@@ -226,16 +257,19 @@ class BacktestEngine:
         signal_filter: SignalFilter | None = None,
         signal_damping: float = 1.0,
         post_entry_ignore_bars: int = 0,
+        vol_regime_filter: bool = False,
+        vol_regime_signal: str = "volume_spike",
+        vol_regime_high_threshold: float = 1.5,
+        *,
+        simple_signal_execution: bool = False,
+        min_steps_between_trades: int | None = None,
+        periods_per_year: float | None = None,
     ) -> None:
         self._event_bus = event_bus or EventBus()
         self._initial_equity = max(initial_equity, _EPS)
         self._target_vol = target_vol
         trace_limit("BacktestEngine.__init__ target_vol (stored, not applied in _replay)", target_vol)
-        self._strategies = strategies or [
-            TrendAlphaStrategy(),
-            MeanReversionAlphaStrategy(),
-            BreakoutAlphaStrategy(),
-        ]
+        self._strategies = strategies or [MomentumPersistenceAlphaStrategy()]
         self._diagnostics = diagnostics
         self._fee_rate = max(0.0, fee_rate)
         self._slippage_rate = max(0.0, slippage_rate)
@@ -250,16 +284,36 @@ class BacktestEngine:
         # Kept for call-site compatibility; net_signal is not re-scaled in execution.
         _ = signal_damping
         self._post_entry_ignore_bars = max(0, post_entry_ignore_bars)
+        self._vol_regime_filter_enabled = bool(vol_regime_filter)
+        self._vol_regime_signal = vol_regime_signal
+        self._vol_regime_high_threshold = float(vol_regime_high_threshold)
+        self._simple_signal_execution = bool(simple_signal_execution)
+        self._min_steps_between_trades = (
+            _DEFAULT_MIN_STEPS_BETWEEN_TRADES
+            if min_steps_between_trades is None
+            else max(0, int(min_steps_between_trades))
+        )
+        self._periods_per_year = periods_per_year
+        self._latest_market_state_for_execution: MarketStateVector | None = None
         self._strategy_weights = {
             strategy.__class__.__name__: 1.0 for strategy in self._strategies
         }
         self._last_trade_step = -10**9
         self._signal_loss = 0.0
         self._signal_count = 0
+        self.exec_debug: dict[str, int] = {
+            "signals_received": 0,
+            "positions_opened": 0,
+            "signals_blocked_position_exists": 0,
+            "signals_blocked_cooldown": 0,
+            "signals_blocked_other": 0,
+        }
         # Wire up full trading pipeline (same as main.py)
         FeatureEngine(event_bus=self._event_bus)
         RegimeEngine(event_bus=self._event_bus)
         MarketStateEngine(event_bus=self._event_bus)
+        # Capture market state before alpha runs so execution can scale by vol regime (risk control).
+        self._event_bus.subscribe("market.state", self._capture_market_state_for_vol)
         self._alpha_engine = AlphaEngine(
             event_bus=self._event_bus,
             strategies=self._strategies,
@@ -267,7 +321,34 @@ class BacktestEngine:
             alpha_visibility=alpha_visibility,
             signal_filter=self._signal_filter,
             strategy_weights=self._strategy_weights,
+            min_signal_keep_threshold=0.0 if self._simple_signal_execution else None,
         )
+
+    def reset_exec_debug(self) -> None:
+        """Reset execution funnel counters (call before each run / symbol / window)."""
+        self.exec_debug = {
+            "signals_received": 0,
+            "positions_opened": 0,
+            "signals_blocked_position_exists": 0,
+            "signals_blocked_cooldown": 0,
+            "signals_blocked_other": 0,
+        }
+
+    def _capture_market_state_for_vol(self, state: MarketStateVector) -> None:
+        self._latest_market_state_for_execution = state
+
+    def _is_high_vol_regime(self, state: MarketStateVector | None) -> bool:
+        """HIGH_VOL when the chosen microstructure signal exceeds threshold (execution-only)."""
+        if not self._vol_regime_filter_enabled or state is None:
+            return False
+        key = self._vol_regime_signal
+        if key == "volume_spike":
+            v = float(getattr(state, "volume_spike", 1.0))
+        elif key in ("volatility_breakout", "vol_expansion"):
+            v = float(getattr(state, "volatility_breakout", 1.0))
+        else:
+            v = float(getattr(state, "volume_spike", 1.0))
+        return math.isfinite(v) and v > self._vol_regime_high_threshold
 
     def run(self, data: list[OHLCV] | None = None) -> BacktestResult:
         """Run backtest loop. Pass candles directly for deterministic replay."""
@@ -294,6 +375,8 @@ class BacktestEngine:
         Portfolio model: position = fraction * equity, pnl = position * price_change.
         Instant execution, no slippage.
         """
+        self.reset_exec_debug()
+        self._latest_market_state_for_execution = None
         equity = self._initial_equity
         gross_equity = self._initial_equity
         position_fraction = 0.0  # Executed position
@@ -349,6 +432,7 @@ class BacktestEngine:
         breakout_pnl = 0.0
         equity_after_last_exec = self._initial_equity
         trade_returns: list[float] = []
+        signal_rank_window: deque[float] = deque(maxlen=_SIGNAL_RANK_WINDOW)
 
         self._signal_loss = 0.0
         self._signal_count = 0
@@ -376,6 +460,7 @@ class BacktestEngine:
             nonlocal pending_position_fraction, latest_net_signal, last_net_for_delta, bars_since_entry
             nonlocal latest_after_smooth_signal, latest_target_position
             nonlocal scale_loss_sum, smooth_loss_sum, mapping_loss_sum, loss_count, signal_power_raw_sum
+            nonlocal position_fraction
             original_signal = net_signal
             # Clip only. Net signal is already filtered/smoothed in alpha; do not damp again here.
             trace_limit("_on_net_signal clip net_signal to [-1,1]", "max(-1.0,min(1.0,net_signal))")
@@ -390,13 +475,32 @@ class BacktestEngine:
                 "[TRACE] execution_signal=%.4f",
                 execution_net_signal,
             )
+            if abs(execution_net_signal) >= _EPS:
+                self.exec_debug["signals_received"] += 1
+            if abs(position_fraction) > _EPS and bars_since_entry < MIN_HOLD_STEPS:
+                if abs(execution_net_signal) >= _EPS:
+                    self.exec_debug["signals_blocked_position_exists"] += 1
+                pending_position_fraction = position_fraction
+                latest_target_position = position_fraction
+                last_net_for_delta = execution_net_signal
+                if self._diagnostics:
+                    _logger.info(
+                        "portfolio.hold reason=signal_horizon_hold "
+                        "bars_since_entry=%s need>=%s",
+                        bars_since_entry,
+                        MIN_HOLD_STEPS,
+                    )
+                return
             has_strong_entry_signal = abs(execution_net_signal) > _ENTRY_SIGNAL_THRESHOLD
             trace_limit("_ENTRY_SIGNAL_THRESHOLD", _ENTRY_SIGNAL_THRESHOLD)
             if (
-                abs(position_fraction) > _EPS
+                not self._simple_signal_execution
+                and abs(position_fraction) > _EPS
                 and bars_since_entry <= self._post_entry_ignore_bars
                 and not has_strong_entry_signal
             ):
+                if abs(execution_net_signal) >= _EPS:
+                    self.exec_debug["signals_blocked_other"] += 1
                 if self._diagnostics:
                     _logger.info(
                         "portfolio.hold reason=post_entry_ignore step=%s bars_since_entry=%s threshold=%s signal=%.4f",
@@ -415,64 +519,129 @@ class BacktestEngine:
             else:
                 allocation = []
             self._event_bus.publish("portfolio.allocation", allocation)
-            signal_for_sizing = (
-                execution_net_signal
-                if abs(execution_net_signal) >= self._min_signal_threshold
-                else 0.0
-            )
-            trace_limit("BacktestEngine _min_signal_threshold", self._min_signal_threshold)
-            _logger.info(
-                "[TRACE] after_min_signal_gate signal=%.4f (execution was %.4f)",
-                signal_for_sizing,
-                execution_net_signal,
-            )
+            rr20_for_target: float | None = None
+            if self._latest_market_state_for_execution is not None:
+                _rr = float(
+                    getattr(
+                        self._latest_market_state_for_execution,
+                        "rolling_return_20",
+                        0.0,
+                    )
+                )
+                rr20_for_target = _rr if math.isfinite(_rr) else 0.0
             scale_loss = abs(latest_raw_signal - latest_after_scale_signal)
             smooth_loss = abs(latest_after_scale_signal - latest_after_smooth_signal)
             scale_loss_sum += scale_loss
             smooth_loss_sum += smooth_loss
             signal_power_raw_sum += latest_raw_signal * latest_raw_signal
-            decision = "proceed"
-            last_sig = last_net_for_delta
-            delta_abs = (
-                abs(execution_net_signal - last_sig)
-                if last_sig is not None
-                else float("inf")
-            )
-            delta_threshold = _SIGNAL_DELTA_BASE_THRESHOLD
-            same_direction = False
-            if last_sig is not None:
-                if abs(execution_net_signal) < _EPS and abs(last_sig) < _EPS:
-                    same_direction = True
-                elif abs(execution_net_signal) >= _EPS and abs(last_sig) >= _EPS:
-                    same_direction = (execution_net_signal > 0 and last_sig > 0) or (
-                        execution_net_signal < 0 and last_sig < 0
-                    )
-            passes_delta_filter = (
-                last_sig is None
-                or abs(execution_net_signal) > _STRONG_SIGNAL_DELTA_BYPASS
-                or (same_direction and delta_abs > _SAME_DIRECTION_MIN_DELTA)
-                or delta_abs > delta_threshold
-            )
-            raw_signal = signal_for_sizing
-            filtered_signal = signal_for_sizing if passes_delta_filter else position_fraction
-            if not passes_delta_filter:
+            if self._simple_signal_execution:
+                signal_for_sizing = execution_net_signal
+                filtered_signal = execution_net_signal
+                decision = "simple_signal_path"
                 _logger.info(
-                    "[TRACE] after_delta_filter signal=%.4f (held previous position_fraction)",
-                    filtered_signal,
+                    "[TRACE] simple_signal_execution net=%.4f -> compute_target_position",
+                    execution_net_signal,
                 )
-                decision = "signal_delta_filter"
+                target = compute_target_position(
+                    filtered_signal,
+                    current_position=position_fraction,
+                    log_validation=self._diagnostics,
+                    rolling_return_20=rr20_for_target,
+                )
+                if (
+                    abs(execution_net_signal) >= _EPS
+                    and abs(target) < _EPS
+                ):
+                    self.exec_debug["signals_blocked_other"] += 1
             else:
-                _logger.info(
-                    "[TRACE] after_delta_filter signal=%.4f (applied mapped_target)",
-                    filtered_signal,
+                signal_for_sizing = (
+                    execution_net_signal
+                    if abs(execution_net_signal) >= self._min_signal_threshold
+                    else 0.0
                 )
-                decision = "enter_or_update"
-            # Always map position from the post-filter execution signal.
-            target = compute_target_position(
-                filtered_signal,
-                current_position=position_fraction,
-                log_validation=self._diagnostics,
-            )
+                trace_limit("BacktestEngine _min_signal_threshold", self._min_signal_threshold)
+                _logger.info(
+                    "[TRACE] after_min_signal_gate signal=%.4f (execution was %.4f)",
+                    signal_for_sizing,
+                    execution_net_signal,
+                )
+                decision = "proceed"
+                last_sig = last_net_for_delta
+                delta_abs = (
+                    abs(execution_net_signal - last_sig)
+                    if last_sig is not None
+                    else float("inf")
+                )
+                delta_threshold = _SIGNAL_DELTA_BASE_THRESHOLD
+                same_direction = False
+                if last_sig is not None:
+                    if abs(execution_net_signal) < _EPS and abs(last_sig) < _EPS:
+                        same_direction = True
+                    elif abs(execution_net_signal) >= _EPS and abs(last_sig) >= _EPS:
+                        same_direction = (execution_net_signal > 0 and last_sig > 0) or (
+                            execution_net_signal < 0 and last_sig < 0
+                        )
+                passes_delta_filter = (
+                    last_sig is None
+                    or abs(execution_net_signal) > _STRONG_SIGNAL_DELTA_BYPASS
+                    or (same_direction and delta_abs > _SAME_DIRECTION_MIN_DELTA)
+                    or delta_abs > delta_threshold
+                )
+                filtered_signal = signal_for_sizing if passes_delta_filter else position_fraction
+                if not passes_delta_filter:
+                    _logger.info(
+                        "[TRACE] after_delta_filter signal=%.4f (held previous position_fraction)",
+                        filtered_signal,
+                    )
+                    decision = "signal_delta_filter"
+                else:
+                    _logger.info(
+                        "[TRACE] after_delta_filter signal=%.4f (applied mapped_target)",
+                        filtered_signal,
+                    )
+                    decision = "enter_or_update"
+                # Rank gate: top decile of |net| vs last 50 bars (symmetric for long/short).
+                abs_net = abs(execution_net_signal)
+                signal_rank_window.append(abs_net)
+                w = list(signal_rank_window)
+                if len(w) < _SIGNAL_RANK_WINDOW:
+                    percentile_rank = 0.0
+                else:
+                    percentile_rank = _empirical_percentile_rank_le(w, abs_net)
+                if percentile_rank < _SIGNAL_RANK_MIN_PERCENTILE:
+                    target = 0.0
+                    if abs(execution_net_signal) >= _EPS:
+                        self.exec_debug["signals_blocked_other"] += 1
+                    if self._diagnostics:
+                        _logger.info(
+                            "[TRACE] signal_rank_gate percentile=%.4f need>=%.4f window=%s",
+                            percentile_rank,
+                            _SIGNAL_RANK_MIN_PERCENTILE,
+                            len(w),
+                        )
+                elif self._is_high_vol_regime(self._latest_market_state_for_execution):
+                    target = 0.0
+                    if abs(execution_net_signal) >= _EPS:
+                        self.exec_debug["signals_blocked_other"] += 1
+                    if self._diagnostics:
+                        _logger.info(
+                            "[TRACE] vol_regime_filter HIGH_VOL "
+                            "signal=%s thr=%.4f target_gated=0.0",
+                            self._vol_regime_signal,
+                            self._vol_regime_high_threshold,
+                        )
+                else:
+                    target = compute_target_position(
+                        filtered_signal,
+                        current_position=position_fraction,
+                        log_validation=self._diagnostics,
+                        rolling_return_20=rr20_for_target,
+                    )
+                    if (
+                        abs(execution_net_signal) >= _EPS
+                        and abs(target) < _EPS
+                    ):
+                        self.exec_debug["signals_blocked_other"] += 1
             print(
                 "[PIPELINE FIX] "
                 f"raw_signal={signal_for_sizing} "
@@ -596,6 +765,12 @@ class BacktestEngine:
                 else:
                     execution_branch = "DIRECT_EXECUTION"
                     target_position = pending_position_fraction
+                if (
+                    want_move
+                    and execution_branch == "COOLDOWN_FREEZE"
+                    and abs(pending - pos) > _EPS
+                ):
+                    self.exec_debug["signals_blocked_cooldown"] += 1
                 target_position = max(-1.0, min(1.0, target_position))
                 executed_position = target_position
                 mismatch = abs(executed_position - pending) > 1e-9
@@ -669,8 +844,9 @@ class BacktestEngine:
                 )
                 # No major-scale / position-change floor: follow full target whenever exposure differs.
                 should_execute = abs(delta) > _EPS
-                min_hold_ok = (i - self._last_trade_step) >= MIN_HOLD_STEPS
+                min_hold_ok = (i - self._last_trade_step) >= self._min_steps_between_trades
                 if should_execute and min_hold_ok:
+                    self.exec_debug["positions_opened"] += 1
                     # Position-change cost with explicit fee + slippage impact.
                     turnover = abs(delta)
                     cost_rate = self._fee_rate + self._slippage_rate
@@ -710,12 +886,13 @@ class BacktestEngine:
                             self._slippage_rate,
                         )
                 elif should_execute and not min_hold_ok:
+                    self.exec_debug["signals_blocked_cooldown"] += 1
                     if self._diagnostics:
                         _logger.info(
                             "portfolio.hold reason=min_hold_steps step=%s last_trade_step=%s min_hold=%s",
                             i,
                             self._last_trade_step,
-                            MIN_HOLD_STEPS,
+                            self._min_steps_between_trades,
                         )
                     bars_since_last_trade += 1
                 else:
@@ -769,7 +946,13 @@ class BacktestEngine:
         # Unsubscribe to avoid leaks if engine is reused
         # (EventBus has no unsubscribe; handlers stay but engine typically single-use)
 
-        metrics = compute_metrics(equity_curve)
+        if self._periods_per_year is not None:
+            metrics = compute_metrics(
+                equity_curve, periods_per_year=float(self._periods_per_year)
+            )
+        else:
+            metrics = compute_metrics(equity_curve)
+        metrics["vol_regime_filter"] = 1.0 if self._vol_regime_filter_enabled else 0.0
         avg_position_size = position_sum / total_bars if total_bars > 0 else 0.0
         time_in_market = (bars_with_position / total_bars * 100.0) if total_bars > 0 else 0.0
 
@@ -865,6 +1048,20 @@ class BacktestEngine:
             sum(trade_returns) / len(trade_returns) if trade_returns else 0.0
         )
         max_drawdown = float(metrics.get("max_drawdown", 0.0))
+        metrics["win_rate"] = win_rate
+        metrics["avg_trade_return"] = avg_trade_return
+
+        _sym = candles[0].symbol if candles else "unknown"
+        print(f"[EXECUTION DEBUG] {_sym}")
+        for _k, _v in self.exec_debug.items():
+            print(f"  {_k}: {_v}")
+
+        if not self._diagnostics:
+            return BacktestResult(
+                equity_curve=equity_curve,
+                metrics=metrics,
+                trade_returns=list(trade_returns),
+            )
 
         def _avg(x: list[float]) -> float:
             return sum(x) / len(x) if x else 0.0
@@ -1040,4 +1237,8 @@ class BacktestEngine:
             print(f"avg_long_return={avg_long_return}")
             print(f"avg_short_return={avg_short_return}")
 
-        return BacktestResult(equity_curve=equity_curve, metrics=metrics)
+        return BacktestResult(
+            equity_curve=equity_curve,
+            metrics=metrics,
+            trade_returns=list(trade_returns),
+        )

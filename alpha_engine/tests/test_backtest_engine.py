@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from alpha_engine.alpha.alpha_signal import AlphaSignal
 from alpha_engine.alpha.base_alpha import BaseAlphaStrategy
 from alpha_engine.backtest.engine import (
@@ -30,7 +32,7 @@ class _AlwaysLongStrategy(BaseAlphaStrategy):
 
 
 class _SubThresholdLongStrategy(BaseAlphaStrategy):
-    """|score| below entry threshold — stays flat (simulates no effective alpha)."""
+    """|score| below sizing dead zone (<0.2) — stays flat (simulates no effective alpha)."""
 
     def on_market_state(self, state: MarketStateVector) -> None:
         _ = state
@@ -39,7 +41,7 @@ class _SubThresholdLongStrategy(BaseAlphaStrategy):
         return AlphaSignal(
             timestamp=state.timestamp,
             strategy_name="SubThreshold",
-            score=0.5,
+            score=0.15,
             confidence=0.9,
         )
 
@@ -74,7 +76,8 @@ class _WeakFluctuationStrategy(BaseAlphaStrategy):
         _ = state
 
     def generate_signal(self, state: MarketStateVector) -> AlphaSignal | None:
-        score = 0.66 if (self._step % 2 == 0) else 0.35
+        # Stay below |signal| < 0.2 dead zone (oscillating weak band).
+        score = 0.15 if (self._step % 2 == 0) else 0.1
         self._step += 1
         return AlphaSignal(
             timestamp=state.timestamp,
@@ -160,13 +163,18 @@ def _uptrend_candles(n: int, start: float = 100.0, step: float = 1.0) -> list[OH
 def test_compute_target_position_mapping() -> None:
     current = 0.25
     assert compute_target_position(0.0, current_position=current) == 0.0
-    # Below |signal| entry threshold -> flat
+    # Below |signal| < 0.2 -> flat
     assert compute_target_position(0.14, current_position=current) == 0.0
     assert compute_target_position(-0.14, current_position=current) == 0.0
-    assert compute_target_position(0.8, current_position=current) == 0.8 * 0.8
-    assert compute_target_position(-0.8, current_position=current) == -0.8 * 0.8
     assert compute_target_position(0.05, current_position=current) == 0.0
     assert compute_target_position(0.2, current_position=current) == 0.0
+    # Linear: magnitude = |signal| - 0.2 for |signal| in [0.2, 1], capped in [-1, 1]
+    assert compute_target_position(0.39, current_position=current) == pytest.approx(0.19)
+    assert compute_target_position(0.41, current_position=current) == pytest.approx(0.21)
+    assert compute_target_position(0.74, current_position=current) == pytest.approx(0.54)
+    assert compute_target_position(0.76, current_position=current) == pytest.approx(0.56)
+    assert compute_target_position(0.8, current_position=current) == pytest.approx(0.6)
+    assert compute_target_position(-0.8, current_position=current) == pytest.approx(-0.6)
 
 
 def test_deterministic_replay() -> None:

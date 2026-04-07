@@ -17,6 +17,7 @@ def _feature_vector(
     **kwargs: float,
 ) -> FeatureVector:
     defaults = {
+        "symbol": None,
         "realized_vol": realized_vol,
         "atr": 0.01,
         "trend_strength": trend_strength,
@@ -29,6 +30,8 @@ def _feature_vector(
         "rolling_return_5": 0.0,
         "rolling_return_10": 0.0,
         "rolling_return_20": 0.0,
+        "regime_trend_strength": 0.0,
+        "latest_bar_return": 0.0,
         "volatility_breakout": 1.0,
         "momentum_acceleration": 0.0,
         "mean_reversion_strength": 0.0,
@@ -36,6 +39,8 @@ def _feature_vector(
         "range_expansion": 1.0,
         "price_vs_recent_high_low": 0.5,
         "ema_crossover_strength": 0.0,
+        "funding_rate": float("nan"),
+        "oi_change": float("nan"),
     }
     defaults.update(kwargs)
     return FeatureVector(timestamp=timestamp, **defaults)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import statistics
+from collections import deque
 
 from alpha_engine.alpha.alpha_signal import AlphaSignal
 from alpha_engine.alpha.base_alpha import BaseAlphaStrategy
@@ -14,10 +16,12 @@ class TrendAlphaStrategy(BaseAlphaStrategy):
 
     SCORE_NORMALIZE_WINDOW = 50
     _EPS = 1e-12
+    _RETURN_VOL_WINDOW = 20
 
     def __init__(self) -> None:
         self._score_history: list[float] = []
         self._recent_scores: list[float] = []
+        self._recent_bar_returns: deque[float] = deque(maxlen=self._RETURN_VOL_WINDOW)
         # Final scores after tanh/amplification/sign-flip; used for rank mapping only.
         self._rank_score_window: list[float] = []
         self._trace_emitted = 0
@@ -31,9 +35,20 @@ class TrendAlphaStrategy(BaseAlphaStrategy):
         r5 = getattr(state, "rolling_return_5", 0.0)
         r10 = getattr(state, "rolling_return_10", 0.0)
         r20 = getattr(state, "rolling_return_20", 0.0)
-        mom_scale = 20.0
-        mtf_mom = (0.5 * r5 + 0.3 * r10 + 0.2 * r20) * mom_scale
-        mtf_mom = max(-1.0, min(1.0, mtf_mom))
+        br = float(getattr(state, "latest_bar_return", 0.0))
+        if math.isfinite(br):
+            self._recent_bar_returns.append(br)
+        raw_momentum = 0.5 * r5 + 0.3 * r10 + 0.2 * r20
+        vol = (
+            statistics.pstdev(self._recent_bar_returns)
+            if len(self._recent_bar_returns) >= 2
+            else 0.0
+        )
+        if math.isfinite(vol) and vol > self._EPS:
+            raw_momentum = raw_momentum / vol
+        raw_momentum = max(-3.0, min(3.0, raw_momentum))
+        # Map [-3, 3] into comparable [-1, 1] for blending with other components.
+        mtf_mom = max(-1.0, min(1.0, raw_momentum / 3.0))
 
         ema_cross = getattr(state, "ema_crossover_strength", 0.0)
         ema_scaled = max(-1.0, min(1.0, ema_cross * 10.0))
@@ -55,6 +70,8 @@ class TrendAlphaStrategy(BaseAlphaStrategy):
         )
 
     def generate_signal(self, state: MarketStateVector) -> AlphaSignal | None:
+        if abs(float(getattr(state, "trend_strength", 0.0))) < 0.002:
+            return None
         raw = self._raw_score(state)
         self._score_history.append(raw)
         if len(self._score_history) > self.SCORE_NORMALIZE_WINDOW:

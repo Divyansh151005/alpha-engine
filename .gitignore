@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.log
+*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Pytest cache
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Env
+.env

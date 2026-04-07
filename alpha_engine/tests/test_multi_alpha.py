@@ -13,6 +13,13 @@ from alpha_engine.core.event_bus import EventBus
 from alpha_engine.state_engine.state_models import MarketStateVector
 
 
+def _seed_breakout_return_history(bo: BreakoutAlphaStrategy, n: int = 22) -> None:
+    """Fill breakout std window with small alternating returns so a later spike can fire."""
+    for i in range(n):
+        r = 0.0004 * (1.0 if i % 2 == 0 else -1.0)
+        bo.generate_signal(_market_state(timestamp=i, latest_bar_return=r))
+
+
 def _market_state(
     timestamp: int = 1700000000000,
     trend_state: float = 0.8,
@@ -27,6 +34,8 @@ def _market_state(
     rolling_return_5: float = 0.0,
     rolling_return_10: float = 0.0,
     rolling_return_20: float = 0.0,
+    trend_strength: float = 0.01,
+    latest_bar_return: float = 0.0,
     volatility_breakout: float = 1.0,
     momentum_acceleration: float = 0.0,
     mean_reversion_strength: float = 0.0,
@@ -49,6 +58,8 @@ def _market_state(
         rolling_return_5=rolling_return_5,
         rolling_return_10=rolling_return_10,
         rolling_return_20=rolling_return_20,
+        trend_strength=trend_strength,
+        latest_bar_return=latest_bar_return,
         volatility_breakout=volatility_breakout,
         momentum_acceleration=momentum_acceleration,
         mean_reversion_strength=mean_reversion_strength,
@@ -119,14 +130,17 @@ def test_signals_differ_across_strategies() -> None:
     assert sig_mr2.score > 0
     assert sig_mr2.direction == "long"
 
-    # Breakout: expansion + vol + price at high -> long
+    # Breakout: |r| > 2 * std(20 returns) -> directional spike
+    _seed_breakout_return_history(breakout)
     state_breakout = _market_state(
+        timestamp=500,
         trend_state=0.8,
         compression_state=0.7,
         volatility_state=0.6,
         momentum_pressure=0.7,
         range_expansion=1.5,
         price_vs_recent_high_low=0.9,
+        latest_bar_return=0.025,
     )
     sig_bo = breakout.generate_signal(state_breakout)
     assert sig_bo is not None
@@ -168,29 +182,34 @@ def test_mean_reversion_stronger_with_confluence() -> None:
     assert sig3 is not None
 
 
-def test_breakout_uses_range_expansion_and_price_position() -> None:
-    """Breakout uses range expansion + vol + price vs recent high/low."""
+def test_breakout_vol_spike_sets_direction() -> None:
+    """Large |return| vs 20-bar return vol yields directional score."""
     bo = BreakoutAlphaStrategy()
-    # Expansion + vol + price at high -> long
+    _seed_breakout_return_history(bo)
     state = _market_state(
+        timestamp=100,
         compression_state=0.7,
         volatility_state=0.6,
         range_expansion=1.5,
         price_vs_recent_high_low=0.85,
         trend_state=0.2,
+        latest_bar_return=0.02,
     )
     sig = bo.generate_signal(state)
     assert sig is not None
     assert sig.direction == "long"
-    # Price at low with expansion -> short
+    bo2 = BreakoutAlphaStrategy()
+    _seed_breakout_return_history(bo2)
     state2 = _market_state(
+        timestamp=101,
         compression_state=0.7,
         volatility_state=0.6,
         range_expansion=1.5,
         price_vs_recent_high_low=0.15,
         trend_state=0.9,
+        latest_bar_return=-0.02,
     )
-    sig2 = bo.generate_signal(state2)
+    sig2 = bo2.generate_signal(state2)
     assert sig2 is not None
     assert sig2.direction == "short"
 
@@ -199,9 +218,11 @@ def test_strategies_produce_opposite_signals() -> None:
     """Mean reversion and breakout can produce opposite signals."""
     mr = MeanReversionAlphaStrategy()
     bo = BreakoutAlphaStrategy()
+    _seed_breakout_return_history(bo)
 
-    # MR long (oversold), breakout short (expanding but price near the low)
-    state = _market_state(
+    # MR long (oversold); breakout short on large negative return vs vol
+    state_mr = _market_state(
+        timestamp=200,
         return_zscore=-2.5,
         lower_wick_ratio=0.4,
         upper_wick_ratio=0.0,
@@ -213,8 +234,22 @@ def test_strategies_produce_opposite_signals() -> None:
         volatility_state=0.4,
         compression_state=0.6,
     )
-    sig_mr = mr.generate_signal(state)
-    sig_bo = bo.generate_signal(state)
+    state_bo = _market_state(
+        timestamp=201,
+        return_zscore=-2.5,
+        lower_wick_ratio=0.4,
+        upper_wick_ratio=0.0,
+        volume_spike=1.5,
+        bollinger_band_distance=-1.0,
+        mean_reversion_strength=-1.5,
+        range_expansion=1.5,
+        price_vs_recent_high_low=0.2,
+        volatility_state=0.4,
+        compression_state=0.6,
+        latest_bar_return=-0.025,
+    )
+    sig_mr = mr.generate_signal(state_mr)
+    sig_bo = bo.generate_signal(state_bo)
     assert sig_mr is not None and sig_bo is not None
     assert sig_mr.direction != sig_bo.direction
 
@@ -298,12 +333,14 @@ def test_mr_produces_nonzero_strong_signals() -> None:
 
 
 def test_mr_sometimes_opposite_of_trend() -> None:
-    """MR can oppose breakout (long when breakout short, short when breakout long)."""
+    """MR can oppose breakout (e.g. MR short vs breakout long on vol spike)."""
     mr = MeanReversionAlphaStrategy()
     bo = BreakoutAlphaStrategy()
+    _seed_breakout_return_history(bo)
 
-    # MR short (overbought), breakout long (expanding and price near high)
+    # MR short (overbought); positive return spike -> breakout long
     state = _market_state(
+        timestamp=300,
         return_zscore=2.5,
         upper_wick_ratio=0.4,
         lower_wick_ratio=0.0,
@@ -314,6 +351,7 @@ def test_mr_sometimes_opposite_of_trend() -> None:
         price_vs_recent_high_low=0.85,
         volatility_state=0.6,
         compression_state=0.7,
+        latest_bar_return=0.025,
     )
     sig_mr = mr.generate_signal(state)
     sig_bo = bo.generate_signal(state)

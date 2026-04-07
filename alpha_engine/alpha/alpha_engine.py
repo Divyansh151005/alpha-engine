@@ -11,6 +11,7 @@ from alpha_engine.alpha.base_alpha import BaseAlphaStrategy
 from alpha_engine.alpha.breakout_alpha import BreakoutAlphaStrategy
 from alpha_engine.alpha.mean_reversion_alpha import MeanReversionAlphaStrategy
 from alpha_engine.alpha.trend_alpha import TrendAlphaStrategy
+from alpha_engine.alpha.momentum_persistence_alpha import MomentumPersistenceAlphaStrategy
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.core.logger import get_logger, trace_limit
 from alpha_engine.regime.regime_engine import RegimeType
@@ -34,6 +35,15 @@ DOMINANCE_RATIO_CONFLICT_THRESHOLD = 1.05
 MIN_DOMINANT_STRENGTH = 0.4
 STRENGTH_DIFF_OVERRIDE_THRESHOLD = 0.15
 NET_SIGNAL_SCALE = 1.0
+# Multi-alpha net: trend dominates; breakout is a smaller contributor.
+_NET_SIGNAL_STRATEGY_WEIGHTS: dict[str, float] = {
+    "TrendAlphaStrategy": 0.8,
+    "BreakoutAlphaStrategy": 0.2,
+    "MomentumPersistenceAlphaStrategy": 1.0,
+    "FundingContrarianAlphaStrategy": 1.0,
+    "FundingPriceConfirmContrarianAlphaStrategy": 1.0,
+    "PriceDivergenceContrarianConfirmAlphaStrategy": 1.0,
+}
 REGIME_STRATEGY_WEIGHTS = {
     # TrendAlphaStrategy has been removed from aggregation, so there is no
     # "trend" strategy weight here.
@@ -52,6 +62,47 @@ def _direction_sign(signal: AlphaSignal) -> float:
     return max(-1.0, min(1.0, signal.score))
 
 
+_FUNDING_CONTRARIAN_NAME = "FundingContrarianAlphaStrategy"
+_PRICE_DIV_CONFIRMS_NAME = "PriceDivergenceContrarianConfirmAlphaStrategy"
+
+
+def _score_direction_sign(score: float) -> float:
+    if score > 1e-12:
+        return 1.0
+    if score < -1e-12:
+        return -1.0
+    return 0.0
+
+
+def _apply_funding_price_confirm_pair_gate(
+    signals: dict[str, float], strategies: list[BaseAlphaStrategy]
+) -> dict[str, float]:
+    """When both funding and price-divergence confirm strategies are registered, require both.
+
+    Drops the confirmation strategy from aggregation (gate only). Removes the funding leg
+    unless the confirmation leg also fired with the same direction.
+    """
+    names = {s.__class__.__name__ for s in strategies}
+    if _FUNDING_CONTRARIAN_NAME not in names or _PRICE_DIV_CONFIRMS_NAME not in names:
+        return signals
+    out = dict(signals)
+    has_f = _FUNDING_CONTRARIAN_NAME in out
+    has_p = _PRICE_DIV_CONFIRMS_NAME in out
+    if not has_f and has_p:
+        del out[_PRICE_DIV_CONFIRMS_NAME]
+        return out
+    if has_f and not has_p:
+        del out[_FUNDING_CONTRARIAN_NAME]
+        return out
+    if has_f and has_p:
+        sf = _score_direction_sign(out[_FUNDING_CONTRARIAN_NAME])
+        sp = _score_direction_sign(out[_PRICE_DIV_CONFIRMS_NAME])
+        if sf == 0.0 or sp == 0.0 or sf != sp:
+            del out[_FUNDING_CONTRARIAN_NAME]
+        del out[_PRICE_DIV_CONFIRMS_NAME]
+    return out
+
+
 class AlphaEngine:
     """Run all alpha strategies on each market state event."""
 
@@ -63,9 +114,13 @@ class AlphaEngine:
         alpha_visibility: bool = True,
         signal_filter: SignalFilter | None = None,
         strategy_weights: dict[str, float] | None = None,
+        *,
+        min_signal_keep_threshold: float | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._strategies = strategies
+        # None: use module MIN_SIGNAL_THRESHOLD; 0.0: publish all emitted scores (standalone research).
+        self._min_signal_keep_threshold = min_signal_keep_threshold
         for s in self._strategies:
             print(f"[STRATEGY INIT] {s.__class__.__name__} id={id(s)}")
         self._force_signal_debug = force_signal_debug
@@ -192,16 +247,10 @@ class AlphaEngine:
         generated_count = 0
         print(f"[STRATEGY COUNT] {len(self._strategies)}")
         if len(self._strategies) == 0:
-            self._strategies = [
-                TrendAlphaStrategy(),
-                BreakoutAlphaStrategy(),
-                MeanReversionAlphaStrategy(),
-            ]
+            self._strategies = [MomentumPersistenceAlphaStrategy()]
             print(f"[STRATEGY COUNT] {len(self._strategies)}")
         for strategy in self._strategies:
             if isinstance(strategy, MeanReversionAlphaStrategy):
-                continue
-            if isinstance(strategy, BreakoutAlphaStrategy):
                 continue
             print(
                 "[LOOP CHECK] "
@@ -265,21 +314,24 @@ class AlphaEngine:
                     filtered_signals[signal.strategy_name] = signal.score
                 else:
                     score_abs = abs(signal.score)
-                    decision = (
-                        "keep" if score_abs >= MIN_SIGNAL_THRESHOLD else "drop"
+                    thresh = (
+                        MIN_SIGNAL_THRESHOLD
+                        if self._min_signal_keep_threshold is None
+                        else float(self._min_signal_keep_threshold)
                     )
+                    decision = "keep" if score_abs >= thresh else "drop"
                     print(
-                        f"[TRACE] filter_score_abs={score_abs} score={signal.score} threshold={MIN_SIGNAL_THRESHOLD} decision={decision}"
+                        f"[TRACE] filter_score_abs={score_abs} score={signal.score} threshold={thresh} decision={decision}"
                     )
-                    if score_abs >= MIN_SIGNAL_THRESHOLD:
+                    if score_abs >= thresh:
                         filtered_signals[signal.strategy_name] = signal.score
                     else:
-                        trace_limit("MIN_SIGNAL_THRESHOLD", MIN_SIGNAL_THRESHOLD)
+                        trace_limit("MIN_SIGNAL_THRESHOLD", thresh)
                         _logger.info(
                             "filter.blocked weak signal strategy=%s score=%.4f threshold=%.4f",
                             signal.strategy_name,
                             signal.score,
-                            MIN_SIGNAL_THRESHOLD,
+                            thresh,
                         )
 
         _logger.info(
@@ -288,7 +340,10 @@ class AlphaEngine:
             len(filtered_signals),
             generated_count - len(filtered_signals),
         )
-        signals = dict(filtered_signals)
+        gated_signals = _apply_funding_price_confirm_pair_gate(
+            dict(filtered_signals), self._strategies
+        )
+        signals = gated_signals
         if not signals:
             print("[WARNING] no signals generated")
         print(f"[SIGNALS DICT] {signals}")
@@ -298,12 +353,12 @@ class AlphaEngine:
             raw_net_signal = 0.0
             _logger.info("[TRACE] aggregate_signal=%.4f", raw_net_signal)
             self.smoothed_signal = raw_net_signal
-            regime_filtered_signals = filtered_signals
+            regime_filtered_signals = gated_signals
         else:
             multipliers = self._resolve_regime_multipliers()
             strong_regime = self._is_strong_regime()
             regime_filtered_signals = {}
-            for name, score in filtered_signals.items():
+            for name, score in gated_signals.items():
                 strategy_type = self._strategy_type(name)
                 if (
                     strong_regime
@@ -380,8 +435,8 @@ class AlphaEngine:
         )
         _logger.info("alpha.net_signal.filtered value=%.4f", self.smoothed_signal)
 
-        self._latest_signals = filtered_signals
-        self._event_bus.publish("alpha.signals", dict(filtered_signals))
+        self._latest_signals = gated_signals
+        self._event_bus.publish("alpha.signals", dict(gated_signals))
         self._event_bus.publish("alpha.net_signal", self.smoothed_signal)
 
         # Track strategy signs/scores for correlation and alpha score logging
@@ -513,13 +568,23 @@ class AlphaEngine:
         return dict(self._latest_signals)
 
     def _compute_net_signal(self, signals: dict[str, float]) -> float:
-        """Compute dominant-side net signal without cancellation averaging."""
+        """Weighted average of active strategy scores (trend-heavy, breakout auxiliary)."""
         print(
             "[AGG INPUT] "
             f"signals={signals}"
         )
-        if signals:
-            net_signal = list(signals.values())[0]
+        weights = _NET_SIGNAL_STRATEGY_WEIGHTS
+        weighted_sum = 0.0
+        total_weight = 0.0
+        for name, signal in signals.items():
+            w = float(weights.get(name, 0.0))
+            weighted_sum += w * signal
+            total_weight += w
+        if total_weight > 0.0:
+            net_signal = weighted_sum / total_weight
+        elif signals:
+            # No weight entry (e.g. test strategies): fall back to mean so single-strategy tests work.
+            net_signal = sum(signals.values()) / len(signals)
         else:
             net_signal = 0.0
         print(
