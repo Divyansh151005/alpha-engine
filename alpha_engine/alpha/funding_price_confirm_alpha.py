@@ -38,6 +38,7 @@ from alpha_engine.alpha.funding_asset_config import (
     resolve_funding_confirm_asset_params,
 )
 from alpha_engine.alpha.funding_contrarian_alpha import FundingContrarianAlphaStrategy
+from alpha_engine.state_engine.market_state_engine import MarketStateEngine
 from alpha_engine.state_engine.state_models import MarketStateVector
 
 
@@ -280,6 +281,9 @@ class FundingPriceConfirmContrarianAlphaStrategy(BaseAlphaStrategy):
         dbg = self.signal_debug_flow
         if dbg:
             self.debug_stats["total_bars"] += 1
+
+        if not bool(getattr(state, "high_volatility", True)):
+            return None
 
         sym = getattr(state, "symbol", None)
         enabled, min_funding_score = resolve_funding_confirm_asset_params(

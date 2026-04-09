@@ -19,6 +19,7 @@ def _feature_vector(
     defaults = {
         "symbol": None,
         "realized_vol": realized_vol,
+        "volatility": realized_vol,
         "atr": 0.01,
         "trend_strength": trend_strength,
         "momentum": 0.0,

@@ -47,6 +47,17 @@ _MR_STRENGTH_WINDOW = 20
 _PRICE_VS_RANGE_WINDOW = 20
 
 
+def compute_volatility(close_prices: np.ndarray | list[float], window: int = 20) -> float:
+    returns = np.diff(np.asarray(close_prices, dtype=np.float64))
+    prices = np.asarray(close_prices, dtype=np.float64)[:-1]
+    if prices.size == 0:
+        return 0.0
+    denom = np.where(np.abs(prices) < 1e-12, np.nan, prices)
+    rets = returns / denom
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    return float(np.std(rets[-window:])) if rets.size >= window else 0.0
+
+
 @dataclass(frozen=True)
 class FeatureVector:
     """Computed market-state features at a given timestamp."""
@@ -54,6 +65,7 @@ class FeatureVector:
     timestamp: int
     symbol: str | None
     realized_vol: float
+    volatility: float
     atr: float
     trend_strength: float
     momentum: float
@@ -145,6 +157,7 @@ class FeatureEngine:
             float(abs(rr20_raw)) if np.isfinite(rr20_raw) else 0.0
         )
         rv = realized_volatility(returns, self.VOLATILITY_WINDOW)
+        vol = compute_volatility(close_arr, self.VOLATILITY_WINDOW)
         self._rolling_realized_vol.append(rv)
         vol_breakout_val = (
             volatility_breakout_signal(np.asarray(self._rolling_realized_vol), _VOL_BREAKOUT_BASELINE)
@@ -179,6 +192,7 @@ class FeatureEngine:
             timestamp=candle.timestamp,
             symbol=candle.symbol,
             realized_vol=rv,
+            volatility=vol,
             atr=atr(high_arr, low_arr, close_arr, self.ATR_WINDOW),
             trend_strength=trend_strength(
                 ema(close_arr, self.EMA_SHORT_PERIOD),

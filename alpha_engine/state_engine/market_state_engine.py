@@ -6,6 +6,8 @@ import math
 from collections import deque
 from math import exp, isfinite, tanh
 
+import numpy as np
+
 from alpha_engine.core.event_bus import EventBus
 from alpha_engine.features.feature_engine import FeatureVector
 from alpha_engine.state_engine.state_models import MarketStateVector
@@ -51,6 +53,9 @@ class MarketStateEngine:
     """Convert raw feature vectors into normalized market state vectors."""
 
     VOLATILITY_BASELINE_WINDOW = 50
+    VOLATILITY_HISTORY_WINDOW = 200
+    VOLATILITY_HIGH_PCT = 60.0
+    VOLATILITY_MIN_HISTORY = 50
     TREND_SIGMOID_STEEPNESS = 8.0
     VOL_RATIO_MIN = 0.5
     VOL_RATIO_MAX = 2.0
@@ -73,13 +78,31 @@ class MarketStateEngine:
         self._event_bus = event_bus
         self._rolling_realized_vol: deque[float] = deque(maxlen=self.VOLATILITY_BASELINE_WINDOW)
         self._rolling_trend_raw: deque[float] = deque(maxlen=self.AMPLIFY_ROLLING_WINDOW)
+        self._volatility_history: deque[float] = deque(maxlen=self.VOLATILITY_HISTORY_WINDOW)
         self._event_bus.subscribe("market.features", self.handle_features)
+
+    @staticmethod
+    def is_high_volatility(
+        volatility: float,
+        history: deque[float] | list[float] | np.ndarray,
+        *,
+        percentile: float = VOLATILITY_HIGH_PCT,
+        min_history: int = VOLATILITY_MIN_HISTORY,
+    ) -> bool:
+        if len(history) < int(min_history):
+            return True  # warmup phase
+        values = np.asarray(list(history), dtype=np.float64)
+        thr = float(np.percentile(values, float(percentile)))
+        return float(volatility) > thr
 
     def handle_features(self, feature_vector: FeatureVector) -> None:
         """Map a feature vector into a stable, normalized market state vector."""
         realized_vol = self._sanitize_nonnegative(feature_vector.realized_vol)
+        volatility = self._sanitize_nonnegative(getattr(feature_vector, "volatility", 0.0))
         self._rolling_realized_vol.append(realized_vol)
+        self._volatility_history.append(volatility)
         rolling_vol = self._rolling_volatility_baseline()
+        high_volatility = self.is_high_volatility(volatility, self._volatility_history)
 
         trend_state = self._amplified_trend_state(
             feature_vector.trend_strength,
@@ -136,9 +159,11 @@ class MarketStateEngine:
             timestamp=feature_vector.timestamp,
             trend_state=trend_state,
             volatility_state=volatility_state,
+            volatility=volatility,
             liquidity_stress=liquidity_stress,
             momentum_pressure=momentum_pressure,
             compression_state=compression_state,
+            high_volatility=high_volatility,
             return_zscore=return_zscore_raw,
             lower_wick_ratio=low_wick,
             upper_wick_ratio=up_wick,

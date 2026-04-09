@@ -301,6 +301,7 @@ class BacktestEngine:
         self._last_trade_step = -10**9
         self._signal_loss = 0.0
         self._signal_count = 0
+        self._latest_position_fraction = 0.0
         self.exec_debug: dict[str, int] = {
             "signals_received": 0,
             "positions_opened": 0,
@@ -357,6 +358,10 @@ class BacktestEngine:
         candles = sorted(data, key=lambda c: (c.timestamp, c.symbol))
         return self._replay(candles)
 
+    def get_latest_position(self) -> float:
+        """Latest executed portfolio position fraction from the most recent replay."""
+        return float(getattr(self, "_latest_position_fraction", 0.0))
+
     def run_from_storage(
         self,
         storage: StorageProtocol,
@@ -377,6 +382,7 @@ class BacktestEngine:
         """
         self.reset_exec_debug()
         self._latest_market_state_for_execution = None
+        self._latest_position_fraction = 0.0
         equity = self._initial_equity
         gross_equity = self._initial_equity
         position_fraction = 0.0  # Executed position
@@ -915,6 +921,7 @@ class BacktestEngine:
             if abs(position_fraction) > _EPS:
                 bars_since_entry += 1
 
+            self._latest_position_fraction = position_fraction
             equity_curve.append((candle.timestamp, equity))
             self._event_bus.publish("market.candle", candle)
             signals_after_bar.append(dict(latest_alpha_signals))

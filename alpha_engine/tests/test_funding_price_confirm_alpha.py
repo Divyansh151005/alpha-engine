@@ -21,6 +21,7 @@ def _state(
     *,
     funding: float,
     ret10: float,
+    volatility: float = 0.01,
     rolling_return_20: float = 0.10,
     symbol: str | None = None,
 ) -> MarketStateVector:
@@ -28,6 +29,7 @@ def _state(
         timestamp=ts,
         trend_state=0.5,
         volatility_state=0.5,
+        volatility=volatility,
         liquidity_stress=0.5,
         momentum_pressure=0.5,
         compression_state=0.5,

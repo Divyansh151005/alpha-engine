@@ -12,9 +12,13 @@ class MarketStateVector:
     timestamp: int
     trend_state: float
     volatility_state: float
+    # Raw volatility proxy (std of simple returns over window); used for regime gating.
+    volatility: float
     liquidity_stress: float
     momentum_pressure: float
     compression_state: float
+    # Adaptive volatility regime gate (percentile-based).
+    high_volatility: bool = True
     return_zscore: float = 0.0  # Raw signed zscore for mean reversion
     lower_wick_ratio: float = 0.0  # Lower wick / range [0, 1]
     upper_wick_ratio: float = 0.0  # Upper wick / range [0, 1]

@@ -13,6 +13,7 @@ def _feature_vector(realized_vol: float, timestamp: int = 1000) -> FeatureVector
         timestamp=timestamp,
         symbol=None,
         realized_vol=realized_vol,
+        volatility=realized_vol,
         atr=0.0,
         trend_strength=0.0,
         momentum=0.0,

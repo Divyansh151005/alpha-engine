@@ -17,11 +17,13 @@ from alpha_engine.state_engine.state_models import MarketStateVector
 def _market_state(
     timestamp: int = 1700000000000,
     volatility_state: float = 0.5,
+    volatility: float = 0.01,
 ) -> MarketStateVector:
     return MarketStateVector(
         timestamp=timestamp,
         trend_state=0.6,
         volatility_state=volatility_state,
+        volatility=volatility,
         liquidity_stress=0.4,
         momentum_pressure=0.5,
         compression_state=0.5,
