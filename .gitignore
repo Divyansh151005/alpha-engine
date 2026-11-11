@@ -1,21 +1,29 @@
-__pycache__/
-*.pyc
-*.log
-*.txt
-
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
+*.egg-info/
+build/
+dist/
 
-# Pytest cache
+# Virtual environments
+.venv/
+venv/
+
+# Test / tooling caches
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# OS
-.DS_Store
-
-# Logs
-*.log
-
-# Env
+# Environment (use .env.example as the template)
 .env
+
+# Logs and run output
+*.log
+run_*.txt
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
