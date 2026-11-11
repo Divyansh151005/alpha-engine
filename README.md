@@ -28,6 +28,7 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 - [Architecture](#architecture)
 - [Project structure](#project-structure)
 - [Quickstart](#quickstart)
+- [Research and validation scripts](#research-and-validation-scripts)
 
 ## Key features
 
@@ -233,3 +234,30 @@ for candle in candles:  # list[OHLCV]
 
 > [!TIP]
 > The engines log every event at `INFO`, including `[TRACE]` lines. Set `LOG_LEVEL=WARNING` in `.env` for quiet runs.
+
+## Research and validation scripts
+
+Every script in [`scripts/`](scripts) reuses the production engines. Apart from `backtest_validation.py`, which runs on synthetic candles, they all pull public Binance data, and none of them need Postgres.
+
+| Script | Purpose |
+|---|---|
+| [`backtest_validation.py`](scripts/backtest_validation.py) | Offline smoke test. Replays synthetic uptrend candles through `BacktestEngine` with the overtrading filters and prints turnover, cost, trade count, return, Sharpe, and drawdown. |
+| [`signal_research.py`](scripts/signal_research.py) | Standalone signal lab. Correlates candidate signals (vol expansion, mean reversion, RSI, volume spike, short-term and delayed reversal, momentum persistence, cross-asset ratio momentum, funding z-score) with forward returns or forward realized volatility, and reports one-sided p-values. |
+| [`funding_backtest_validation.py`](scripts/funding_backtest_validation.py) | Funding-contrarian backtests with optional price confirmation, per-asset configuration, regime and funding-structure gates (static or adaptive percentile), multi-symbol runs, and older-vs-recent robustness splits. |
+| [`production_validation.py`](scripts/production_validation.py) | Replays the unchanged engine across multiple time windows, offsets, and symbols (BTC/USDT, ETH/USDT) and summarizes per-trade return distributions. |
+| [`vol_filter_compare.py`](scripts/vol_filter_compare.py) | A/B test of the HIGH_VOL execution filter on identical candles and an identical alpha stack. |
+| [`paper_trade_runner.py`](scripts/paper_trade_runner.py) | Paper-trading loop. Every minute it refreshes a rolling window of ETH/USDT 1h bars with funding, replays the funding + price-confirm strategy, and logs decisions to `logs/paper_trade_ETH_USDT.log`. |
+
+```bash
+# Offline sanity check (no network needed)
+python scripts/backtest_validation.py
+
+# Which signals actually predict the next 5 bars?
+python scripts/signal_research.py --symbol BTC/USDT --timeframe 15m --limit 3000 --horizon 5
+
+# Funding contrarian + price confirmation with adaptive funding gates and a robustness split
+python scripts/funding_backtest_validation.py --timeframe 1h --funding-regime-adaptive --robustness-split
+
+# Multi-window, multi-symbol robustness
+python scripts/production_validation.py
+```
