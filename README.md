@@ -31,6 +31,8 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 - [Research and validation scripts](#research-and-validation-scripts)
 - [Configuration](#configuration)
 - [Testing](#testing)
+- [Roadmap](#roadmap)
+- [Disclaimer](#disclaimer)
 
 ## Key features
 
@@ -302,3 +304,35 @@ The suite has 135 tests and runs in seconds. It needs no database or network, be
 - position-manager hold and flip rules, filters, and backtest metrics
 
 CI runs the suite on Python 3.10, 3.11, and 3.12 for every push and pull request ([workflow](.github/workflows/tests.yml)).
+
+## Roadmap
+
+The engine was built phase by phase. Each phase below matches a commit in the history.
+
+- [x] **Phase 0**: Core skeleton with event bus, typed config, logging, base interfaces, and tests
+- [x] **Phase 1**: Binance data engine with historical fetch, WebSocket stream, PostgreSQL storage, and event publishing
+- [x] **Phase 2**: Feature engine with volatility, trend, and microstructure indicators
+- [x] **Phase 3**: Market state engine that normalizes features into state signals
+- [x] **Phase 5**: Dynamic capital allocation with signal weighting
+- [x] **Phase 6**: Volatility-targeting position sizing
+- [x] **Phase 7**: Risk engine with drawdown deleveraging and a kill switch
+- [x] **Phase 9.7**: Directionally balanced multi-alpha system with strengthened mean reversion and long/short symmetry
+- [x] Ranking gate, persistence filter, and symmetric execution
+- [x] Funding-contrarian alpha with price-divergence confirmation and regime-based sizing
+- [x] Adaptive percentile-based volatility and funding filters with open-interest regime data
+- [ ] Live order execution behind `BaseExecutionEngine`
+- [ ] Open-interest and order-book imbalance as first-class alpha inputs
+- [ ] Persisted backtest results and a reporting dashboard
+
+## Disclaimer
+
+> [!WARNING]
+> This project is for research and educational purposes only. It is **not** financial advice. Trading crypto derivatives carries substantial risk of loss. Backtest results are not a guarantee of future performance. Use at your own risk.
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+<div align="center">
+<sub>Built by <a href="https://github.com/Divyansh151005">Divyansh Barodiya</a></sub>
+</div>
