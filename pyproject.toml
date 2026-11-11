@@ -1,0 +1,12 @@
+[project]
+name = "alpha-engine"
+version = "0.1.0"
+description = "Event-driven, regime-adaptive multi-alpha crypto trading research engine"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Divyansh Barodiya" }]
+
+[tool.pytest.ini_options]
+testpaths = ["alpha_engine/tests"]
+addopts = "-q"
