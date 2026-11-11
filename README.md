@@ -26,6 +26,7 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 - [Key features](#key-features)
 - [Alpha strategy catalog](#alpha-strategy-catalog)
 - [Architecture](#architecture)
+- [Project structure](#project-structure)
 
 ## Key features
 
@@ -121,3 +122,32 @@ flowchart LR
 | Exposure multiplier | 1.0 | 0.8 | 0.5 | 0.2 | **0.0 (kill switch)** |
 
 The full topic contract and per-module notes are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Project structure
+
+```text
+alpha-engine/
+├── main.py                       # Wires the full event pipeline, bootstraps BTC/USDT 1m history, runs a backtest
+├── requirements.txt
+├── pyproject.toml                # Project metadata and pytest config
+├── .env.example                  # Template for database and runtime settings
+├── docs/
+│   └── ARCHITECTURE.md           # Event topic contract and module notes
+├── scripts/                      # Research, validation, and paper-trading entry points
+└── alpha_engine/
+    ├── core/                     # EventBus, pydantic Settings, logger, global state
+    ├── data_engine/              # Binance REST client, WebSocket stream, Postgres storage, schema.sql
+    ├── data/                     # OHLCV model, funding-rate and open-interest fetch and alignment
+    ├── features/                 # FeatureEngine plus trend, volatility, microstructure helpers
+    ├── regime/                   # RegimeEngine and regime weight multipliers
+    ├── state_engine/             # MarketStateEngine and MarketStateVector
+    ├── alpha/                    # AlphaEngine, AlphaSignal, and the 8 strategies
+    ├── filters/                  # SignalFilter, CooldownTracker, TradeFrequencyTracker
+    ├── allocation_engine/        # CapitalAllocator and PositionAllocation
+    ├── volatility_engine/        # VolatilityTargetingEngine
+    ├── risk_engine/              # RiskEngine, RiskState, drawdown ladder
+    ├── position/                 # PositionManager (discrete -1/0/+1 positions)
+    ├── backtest/                 # BacktestEngine, metrics, cost model
+    ├── strategies/ allocation/ risk/ execution/   # Abstract interfaces for pluggable layers
+    └── tests/                    # 135 pytest tests across 18 modules
+```
