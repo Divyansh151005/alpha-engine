@@ -25,6 +25,7 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 
 - [Key features](#key-features)
 - [Alpha strategy catalog](#alpha-strategy-catalog)
+- [Architecture](#architecture)
 
 ## Key features
 
@@ -54,3 +55,69 @@ All strategies live in [`alpha_engine/alpha/`](alpha_engine/alpha) and implement
 | `FundingContrarianAlphaStrategy` | Funding | Negated rolling z-score of perpetual funding (default 168-bar window): crowded longs lead to a short tilt, crowded shorts to a long tilt. |
 | `FundingPriceConfirmContrarianAlphaStrategy` | Funding + price | Requires an extreme funding score **and** an agreeing 10-bar return, with optional `abs(r20)` regime band, adaptive percentile funding-structure gates, and sign-persistence checks. Per-asset overrides live in `funding_asset_config.py`. |
 | `PriceDivergenceContrarianConfirmAlphaStrategy` | Confirmation | Second leg of the funding thesis. When registered with the funding contrarian, `AlphaEngine` only lets the pair trade if **both** agree. |
+
+## Architecture
+
+Every component subscribes to topics on a shared `EventBus`, does one job, and publishes its result on a new topic. Nothing calls anything else directly, so each layer can be replaced, disabled, or unit-tested by publishing synthetic events.
+
+```mermaid
+flowchart LR
+    subgraph data [Data]
+        Binance["Binance REST + WebSocket"] --> DataService
+        DataService --- Postgres[("PostgreSQL ohlcv")]
+    end
+    subgraph signal [Signal]
+        FeatureEngine
+        RegimeEngine
+        MarketStateEngine
+        AlphaEngine
+    end
+    subgraph portfolio [Portfolio]
+        CapitalAllocator
+        VolTarget["VolatilityTargetingEngine"]
+        RiskEngine
+    end
+    DataService -->|market.candle| FeatureEngine
+    DataService -->|market.candle| RegimeEngine
+    FeatureEngine -->|market.features| RegimeEngine
+    FeatureEngine -->|market.features| MarketStateEngine
+    FeatureEngine -->|market.features| VolTarget
+    MarketStateEngine -->|market.state| AlphaEngine
+    RegimeEngine -->|market.regime| AlphaEngine
+    RegimeEngine -->|market.regime| CapitalAllocator
+    AlphaEngine -->|alpha.signal| CapitalAllocator
+    CapitalAllocator -->|portfolio.allocation| VolTarget
+    VolTarget -->|portfolio.position| RiskEngine
+    RiskEngine -->|portfolio.final| Output["Final positions"]
+```
+
+| Engine | Package | Responsibility |
+|---|---|---|
+| Data | `data_engine/`, `data/` | Fetch, stream, and store candles; fetch and align funding and open interest. |
+| Features | `features/` | Rolling technical and microstructure features per bar. |
+| Regime | `regime/` | `TREND` / `MEAN_REVERSION` / `HIGH_VOL` / `LOW_VOL` from trend strength, vol ratio, and lag-1 autocorrelation. |
+| Market state | `state_engine/` | Normalize features into a `[0, 1]` state vector plus the raw signed fields strategies need. |
+| Alpha | `alpha/` | Run strategies, filter weak signals, gate paired strategies, smooth the net signal. |
+| Filters | `filters/` | Signal threshold, cooldown, and trade-frequency limits. |
+| Allocation | `allocation_engine/` | Turn signals into capital fractions and reweight them by regime. |
+| Volatility targeting | `volatility_engine/` | Scale exposure toward a target volatility. |
+| Risk | `risk_engine/` | Drawdown ladder and kill switch. |
+| Position | `position/` | Discrete `-1 / 0 / +1` position state with hold and flip rules. |
+| Backtest | `backtest/` | Replay candles through the stack with costs and execution gates. |
+
+**Regime weights** applied by the allocator:
+
+| Regime | Trend | Breakout | Mean reversion |
+|---|:-:|:-:|:-:|
+| `TREND` | 1.3 | 1.2 | 0.6 |
+| `MEAN_REVERSION` | 0.6 | 0.8 | 1.3 |
+| `HIGH_VOL` | 0.7 | 0.7 | 0.7 |
+| `LOW_VOL` | 1.0 | 0.6 | 1.0 |
+
+**Drawdown ladder** applied by the risk engine:
+
+| Drawdown | under 5% | 5% or more | 10% or more | 15% or more | 20% or more |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Exposure multiplier | 1.0 | 0.8 | 0.5 | 0.2 | **0.0 (kill switch)** |
+
+The full topic contract and per-module notes are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
