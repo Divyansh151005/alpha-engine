@@ -61,9 +61,9 @@ def main() -> None:
         return float(d.get(k, 0.0))
 
     print("=" * 72)
-print("VOL REGIME FILTER — same candles, same alpha stack")
-print("Rank gate: |net| in top 10% vs last 50 bars  ->  else flat")
-print("HIGH_VOL: volume_spike > 1.5  ->  target_position = 0 (hard gate)")
+    print("VOL REGIME FILTER — same candles, same alpha stack")
+    print("Rank gate: |net| in top 10% vs last 50 bars  ->  else flat")
+    print("HIGH_VOL: volume_spike > 1.5  ->  target_position = 0 (hard gate)")
     print("=" * 72)
     print(f"{'metric':<22} {'WITHOUT filter':>18} {'WITH filter':>18}")
     print("-" * 72)
