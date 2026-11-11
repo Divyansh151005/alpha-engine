@@ -27,6 +27,7 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 - [Alpha strategy catalog](#alpha-strategy-catalog)
 - [Architecture](#architecture)
 - [Project structure](#project-structure)
+- [Quickstart](#quickstart)
 
 ## Key features
 
@@ -149,5 +150,86 @@ alpha-engine/
     ├── position/                 # PositionManager (discrete -1/0/+1 positions)
     ├── backtest/                 # BacktestEngine, metrics, cost model
     ├── strategies/ allocation/ risk/ execution/   # Abstract interfaces for pluggable layers
-    └── tests/                    # 135 pytest tests across 18 modules
+    └── tests/                    # 135 pytest tests across 17 modules
 ```
+
+## Quickstart
+
+### Prerequisites
+
+- Python 3.10 or newer
+- PostgreSQL (only needed for `main.py` and live ingestion; tests and most scripts do not need it)
+- Internet access to Binance public endpoints (no API key required for market data)
+
+### 1. Install
+
+```bash
+git clone https://github.com/Divyansh151005/alpha-engine.git
+cd alpha-engine
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env   # then edit the DB_* values
+```
+
+### 3. Create the database
+
+```bash
+createuser alpha_user --pwprompt
+createdb alpha_engine --owner alpha_user
+```
+
+The `ohlcv` table is created automatically on startup from [`alpha_engine/data_engine/schema.sql`](alpha_engine/data_engine/schema.sql).
+
+### 4. Run the pipeline
+
+```bash
+python main.py
+```
+
+`main.py` wires every engine onto one event bus, bootstraps the last 300 one-minute `BTC/USDT` candles into Postgres, streams them through the pipeline, and then runs a backtest sanity check that prints:
+
+```text
+Backtest metrics:
+  total_return: ...
+  sharpe_ratio: ...
+  trade_count: ...
+  avg_position_size: ...
+  time_in_market: ...%
+  turnover: ...
+  total_cost: ...
+  cost_impact: ...
+```
+
+### Use the pipeline in your own code
+
+```python
+from alpha_engine.core.event_bus import EventBus
+from alpha_engine.features import FeatureEngine
+from alpha_engine.regime import RegimeEngine
+from alpha_engine.state_engine import MarketStateEngine
+from alpha_engine.alpha import AlphaEngine, TrendAlphaStrategy, MeanReversionAlphaStrategy
+from alpha_engine.filters import SignalFilter
+
+bus = EventBus()
+FeatureEngine(event_bus=bus)
+RegimeEngine(event_bus=bus)
+MarketStateEngine(event_bus=bus)
+AlphaEngine(
+    event_bus=bus,
+    strategies=[TrendAlphaStrategy(), MeanReversionAlphaStrategy()],
+    signal_filter=SignalFilter(),
+)
+
+bus.subscribe("alpha.signal", lambda s: print(s.strategy_name, s.score))
+
+for candle in candles:  # list[OHLCV]
+    bus.publish("market.candle", candle)
+```
+
+> [!TIP]
+> The engines log every event at `INFO`, including `[TRACE]` lines. Set `LOG_LEVEL=WARNING` in `.env` for quiet runs.
