@@ -29,6 +29,8 @@ The same feature, state, and alpha code is reused by live data ingestion, a cost
 - [Project structure](#project-structure)
 - [Quickstart](#quickstart)
 - [Research and validation scripts](#research-and-validation-scripts)
+- [Configuration](#configuration)
+- [Testing](#testing)
 
 ## Key features
 
@@ -261,3 +263,42 @@ python scripts/funding_backtest_validation.py --timeframe 1h --funding-regime-ad
 # Multi-window, multi-symbol robustness
 python scripts/production_validation.py
 ```
+
+## Configuration
+
+Runtime settings are loaded from environment variables or `.env` by [`alpha_engine/core/config.py`](alpha_engine/core/config.py) (pydantic `BaseSettings`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `EXCHANGE_NAME` | `binance` | Exchange identifier |
+| `DEFAULT_SYMBOL` | `BTCUSDT` | Default trading symbol |
+| `BASE_RISK_PER_TRADE` | `0.01` | Base fraction of equity risked per trade |
+| `TARGET_ANNUAL_VOL` | `0.2` | Annualized volatility target |
+| `MAX_DRAWDOWN` | `0.15` | Maximum tolerated drawdown |
+| `DB_HOST` / `POSTGRES_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` / `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `DB_NAME` / `POSTGRES_DB` | `postgres` | Database name |
+| `DB_USER` / `POSTGRES_USER` | `postgres` | Database user |
+| `DB_PASSWORD` / `POSTGRES_PASSWORD` | empty | Database password |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+
+When both are set, the `POSTGRES_*` variables take precedence over `DB_*`.
+
+Backtest behaviour is configured in code through `BacktestEngine(...)` keyword arguments. The main ones are `fee_rate` (`0.0004`), `slippage_rate` (`0.0002`), `min_signal_threshold`, `cooldown_candles`, `max_trades_per_100_steps`, `min_holding_period`, and `vol_regime_filter`.
+
+## Testing
+
+```bash
+python -m pytest
+```
+
+The suite has 135 tests and runs in seconds. It needs no database or network, because every engine is exercised by publishing synthetic events onto an isolated `EventBus`. Coverage includes:
+
+- event bus fan-out and handler isolation, config loading, logging
+- data engine bootstrap, storage, and open-interest alignment
+- feature, market-state, and regime classification correctness
+- each alpha strategy, funding + price-confirm gating, and multi-alpha diversification (pairwise strategy correlation below 0.7)
+- allocation, volatility-targeting bounds, the drawdown ladder, and the kill switch
+- position-manager hold and flip rules, filters, and backtest metrics
+
+CI runs the suite on Python 3.10, 3.11, and 3.12 for every push and pull request ([workflow](.github/workflows/tests.yml)).
